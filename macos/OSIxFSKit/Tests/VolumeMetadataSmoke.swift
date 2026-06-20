@@ -47,6 +47,8 @@ struct VolumeMetadataSmoke {
         let renameOverUpperDirectorySourcePath = "agent/workspace/rename-over-upper-dir-source.txt"
         let renameOverUpperDirectoryDestinationPath = "agent/workspace/rename-over-upper-dir-dest"
         let renameIntoRemovedDirectoryPath = "agent/workspace/rename-into-removed.txt"
+        let renameLowerDirectoryFlushRollbackPath = "agent/workspace/rename-lower-dir-flush-rollback"
+        let renameLowerDirectoryFlushRollbackDestinationPath = "agent/workspace/renamed-lower-dir-flush-rollback"
         let renameLowerDirectoryPath = "agent/workspace/rename-lower-dir"
         let renameLowerDirectoryDestinationPath = "agent/workspace/renamed-lower-dir"
         let renameIntoSelfDirectoryPath = "agent/workspace/rename-into-self"
@@ -88,6 +90,8 @@ struct VolumeMetadataSmoke {
         let lowerRenameOverLowerDirectoryDestinationFile = URL(fileURLWithPath: lower).appendingPathComponent(renameOverLowerDirectoryDestinationPath + "/child.txt").path
         let lowerRenameOverUpperDirectorySource = URL(fileURLWithPath: lower).appendingPathComponent(renameOverUpperDirectorySourcePath).path
         let lowerRenameIntoRemovedDirectorySource = URL(fileURLWithPath: lower).appendingPathComponent(renameIntoRemovedDirectoryPath).path
+        let lowerRenameLowerDirectoryFlushRollback = URL(fileURLWithPath: lower).appendingPathComponent(renameLowerDirectoryFlushRollbackPath).path
+        let lowerRenameLowerDirectoryFlushRollbackChild = URL(fileURLWithPath: lower).appendingPathComponent(renameLowerDirectoryFlushRollbackPath + "/lower-child.txt").path
         let lowerRenameLowerDirectory = URL(fileURLWithPath: lower).appendingPathComponent(renameLowerDirectoryPath).path
         let lowerRenameLowerDirectoryChild = URL(fileURLWithPath: lower).appendingPathComponent(renameLowerDirectoryPath + "/lower-child.txt").path
         let lowerRenameIntoSelfDirectory = URL(fileURLWithPath: lower).appendingPathComponent(renameIntoSelfDirectoryPath).path
@@ -165,6 +169,10 @@ struct VolumeMetadataSmoke {
         let upperRenameOverUpperDirectoryWhiteout = URL(fileURLWithPath: upper).appendingPathComponent("agent/workspace/.wh.rename-over-upper-dir-source.txt").path
         let upperRenameIntoRemovedDirectoryDestination = URL(fileURLWithPath: upper).appendingPathComponent(removedDirectoryPath + "/should-not-move.txt").path
         let upperRenameIntoRemovedDirectoryWhiteout = URL(fileURLWithPath: upper).appendingPathComponent("agent/workspace/.wh.rename-into-removed.txt").path
+        let upperRenameLowerDirectoryFlushRollback = URL(fileURLWithPath: upper).appendingPathComponent(renameLowerDirectoryFlushRollbackPath).path
+        let upperRenameLowerDirectoryFlushRollbackChild = URL(fileURLWithPath: upper).appendingPathComponent(renameLowerDirectoryFlushRollbackPath + "/upper-child.txt").path
+        let upperRenameLowerDirectoryFlushRollbackWhiteout = URL(fileURLWithPath: upper).appendingPathComponent("agent/workspace/.wh.rename-lower-dir-flush-rollback").path
+        let upperRenamedLowerDirectoryFlushRollback = URL(fileURLWithPath: upper).appendingPathComponent(renameLowerDirectoryFlushRollbackDestinationPath).path
         let upperRenameLowerDirectory = URL(fileURLWithPath: upper).appendingPathComponent(renameLowerDirectoryPath).path
         let upperRenameLowerDirectoryChild = URL(fileURLWithPath: upper).appendingPathComponent(renameLowerDirectoryPath + "/upper-child.txt").path
         let upperRenameLowerDirectoryWhiteout = URL(fileURLWithPath: upper).appendingPathComponent("agent/workspace/.wh.rename-lower-dir").path
@@ -210,8 +218,12 @@ struct VolumeMetadataSmoke {
         try Data("lower dir child".utf8).write(to: URL(fileURLWithPath: lowerRenameOverLowerDirectoryDestinationFile))
         try Data("upper dir source".utf8).write(to: URL(fileURLWithPath: lowerRenameOverUpperDirectorySource))
         try Data("rename into removed".utf8).write(to: URL(fileURLWithPath: lowerRenameIntoRemovedDirectorySource))
+        try FileManager.default.createDirectory(atPath: lowerRenameLowerDirectoryFlushRollback, withIntermediateDirectories: true)
+        try Data("lower rollback child".utf8).write(to: URL(fileURLWithPath: lowerRenameLowerDirectoryFlushRollbackChild))
         try FileManager.default.createDirectory(atPath: lowerRenameLowerDirectory, withIntermediateDirectories: true)
         try Data("lower rename child".utf8).write(to: URL(fileURLWithPath: lowerRenameLowerDirectoryChild))
+        try FileManager.default.createDirectory(atPath: upperRenameLowerDirectoryFlushRollback, withIntermediateDirectories: true)
+        try Data("upper rollback child".utf8).write(to: URL(fileURLWithPath: upperRenameLowerDirectoryFlushRollbackChild))
         try FileManager.default.createDirectory(atPath: upperRenameLowerDirectory, withIntermediateDirectories: true)
         try Data("upper rename child".utf8).write(to: URL(fileURLWithPath: upperRenameLowerDirectoryChild))
         try FileManager.default.createDirectory(atPath: lowerRenameIntoSelfChildDirectory, withIntermediateDirectories: true)
@@ -555,6 +567,22 @@ struct VolumeMetadataSmoke {
               !FileManager.default.fileExists(atPath: upperRenameIntoSelfWhiteout) else {
             throw SmokeError("rename directory into own descendant mutated filesystem state")
         }
+        let renameLowerDirectoryFlushRollback = OSIxItem(relativePath: renameLowerDirectoryFlushRollbackPath, physicalPath: lowerRenameLowerDirectoryFlushRollback, type: .directory, source: .lower)
+        try? FileManager.default.removeItem(atPath: dirtyFile)
+        try FileManager.default.createDirectory(atPath: dirtyFile, withIntermediateDirectories: false)
+        do {
+            try renameItem(volume: volume, item: renameLowerDirectoryFlushRollback, sourceDirectory: workspaceItem(lower: lower, relativePath: "agent/workspace"), sourceName: FSFileName(string: "rename-lower-dir-flush-rollback"), destinationName: FSFileName(string: "renamed-lower-dir-flush-rollback"), destinationDirectory: workspaceItem(lower: lower, relativePath: "agent/workspace"))
+            throw SmokeError("lower-covering directory rename succeeded despite dirty flush failure")
+        } catch let error as NSError where error.domain == NSPOSIXErrorDomain || error.domain == NSCocoaErrorDomain {
+        }
+        try FileManager.default.removeItem(atPath: dirtyFile)
+        guard (try? String(contentsOfFile: lowerRenameLowerDirectoryFlushRollbackChild, encoding: .utf8)) == "lower rollback child",
+              (try? String(contentsOfFile: upperRenameLowerDirectoryFlushRollbackChild, encoding: .utf8)) == "upper rollback child",
+              !FileManager.default.fileExists(atPath: upperRenameLowerDirectoryFlushRollbackWhiteout),
+              !itemExistsNoFollow(upperRenamedLowerDirectoryFlushRollback) else {
+            throw SmokeError("failed lower-covering directory rename did not restore source state")
+        }
+        _ = try lookupItem(volume: volume, name: FSFileName(string: "rename-lower-dir-flush-rollback"), directory: workspaceItem(lower: lower, relativePath: "agent/workspace"))
         let renameLowerDirectory = OSIxItem(relativePath: renameLowerDirectoryPath, physicalPath: lowerRenameLowerDirectory, type: .directory, source: .lower)
         try renameItem(volume: volume, item: renameLowerDirectory, sourceDirectory: workspaceItem(lower: lower, relativePath: "agent/workspace"), sourceName: FSFileName(string: "rename-lower-dir"), destinationName: FSFileName(string: "renamed-lower-dir"), destinationDirectory: workspaceItem(lower: lower, relativePath: "agent/workspace"))
         guard !itemExistsNoFollow(upperRenameLowerDirectory),

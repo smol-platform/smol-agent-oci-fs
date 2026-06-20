@@ -506,24 +506,43 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
             let destinationPath = upperPath(upper, destinationRelativePath)
             if current.type == .directory, sourceCoversLower {
                 let existingDestinationParent = nearestExistingUpperParent(for: destinationRelativePath)
-                var materializedDestination = false
+                let sourceUpperBackup = try backupUpperItem(sourceRelativePath)
+                let stashedDestination = try stashHiddenUpperItemIfWhitedOut(destinationRelativePath)
+                let destinationWhiteoutExisted = hasWhiteout(for: destinationRelativePath)
+                var sourceUpperRemoved = false
+                var createdSourceWhiteout = false
+                var removedDestinationWhiteout = false
                 do {
                     try fileManager.createDirectory(atPath: parentFilesystemPath(destinationPath), withIntermediateDirectories: true)
                     try renameLowerCoveringDirectory(current, destinationPath: destinationPath)
-                    materializedDestination = true
                     let sourceUpperPath = upperPath(upper, sourceRelativePath)
                     if itemExists(at: sourceUpperPath) {
                         try fileManager.removeItem(atPath: sourceUpperPath)
+                        sourceUpperRemoved = true
                     }
                     try createWhiteout(for: sourceRelativePath)
+                    createdSourceWhiteout = true
                     removeWhiteout(for: destinationRelativePath)
+                    removedDestinationWhiteout = destinationWhiteoutExisted
                     try flushDirtyIndex()
+                    try discardStashedHiddenUpperItem(sourceUpperBackup)
+                    try discardStashedHiddenUpperItem(stashedDestination)
                     reply(FSFileName(string: newName), nil)
                     return
                 } catch {
-                    if !materializedDestination {
-                        removeCreatedUpperItemAndEmptyParents(destinationRelativePath, stoppingAt: existingDestinationParent)
+                    removeCreatedUpperItemAndEmptyParents(destinationRelativePath, stoppingAt: existingDestinationParent)
+                    if createdSourceWhiteout {
+                        removeWhiteout(for: sourceRelativePath)
                     }
+                    if removedDestinationWhiteout {
+                        try createWhiteout(for: destinationRelativePath)
+                    }
+                    if sourceUpperRemoved {
+                        try restoreStashedHiddenUpperItem(sourceUpperBackup)
+                    } else {
+                        try discardStashedHiddenUpperItem(sourceUpperBackup)
+                    }
+                    try restoreStashedHiddenUpperItem(stashedDestination)
                     throw error
                 }
             }
