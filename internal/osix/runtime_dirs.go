@@ -20,6 +20,11 @@ func prepareKernelMountDirs(workspaceRoot, sourceRef, target string, opts MountO
 	upper = filepath.Join(root, "upper")
 	work = filepath.Join(root, "work")
 	rootExisted = pathExists(root)
+	if rootExisted {
+		if err := validateKernelMountRoot(root); err != nil {
+			return "", "", "", "", rootExisted, err
+		}
+	}
 	cleanupRoot := root
 	defer func() {
 		if err != nil && !rootExisted {
@@ -44,6 +49,17 @@ func cleanupFreshKernelMountDirs(root string, rootExisted bool) {
 }
 
 func pathExists(path string) bool {
-	_, err := os.Stat(path)
+	_, err := os.Lstat(path)
 	return err == nil || !os.IsNotExist(err)
+}
+
+func validateKernelMountRoot(root string) error {
+	info, err := os.Lstat(root)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("runtime root %s is not a directory", root)
+	}
+	return nil
 }

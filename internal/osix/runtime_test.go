@@ -263,6 +263,53 @@ func TestPrepareKernelMountDirsPreservesPreexistingRootOnFailure(t *testing.T) {
 	}
 }
 
+func TestPrepareKernelMountDirsRejectsSymlinkRuntimeRoot(t *testing.T) {
+	root := t.TempDir()
+	if _, err := Init(root, InitOptions{
+		Base:          "example/base:latest",
+		Name:          "agent",
+		StateRef:      "local/agent",
+		Mount:         filepath.Join(root, "fs"),
+		DefaultBranch: "main",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fs := filepath.Join(root, "fs")
+	mustWrite(t, filepath.Join(fs, "agent", "workspace", "file.txt"), "v1\n")
+	if _, err := Snapshot(root, fs, SnapshotOptions{Tag: "snap-000001"}); err != nil {
+		t.Fatal(err)
+	}
+
+	target := filepath.Join(root, "merged")
+	s, err := findStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mountID, err := mountKey(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mountRoot := filepath.Join(s.mountsRoot(), mountID)
+	redirectRoot := filepath.Join(root, "redirect-root")
+	if err := os.MkdirAll(redirectRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(redirectRoot, mountRoot); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, _, _, _, err = prepareKernelMountDirs(root, "snap-000001", target, MountOptions{})
+	if err == nil || !strings.Contains(err.Error(), "runtime root") || !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("expected symlink runtime root error, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(redirectRoot, "lower")); !os.IsNotExist(err) {
+		t.Fatalf("runtime prep should not follow symlink root, stat err=%v", err)
+	}
+	if _, err := os.Lstat(mountRoot); err != nil {
+		t.Fatalf("preexisting symlink root should be preserved, err=%v", err)
+	}
+}
+
 func TestCleanupFreshKernelMountDirsPreservesPreexistingRoot(t *testing.T) {
 	root := t.TempDir()
 	if _, err := Init(root, InitOptions{
