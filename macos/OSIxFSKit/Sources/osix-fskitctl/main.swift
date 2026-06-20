@@ -36,15 +36,26 @@ struct OSIxFSKitControl {
 
         switch command {
         case "doctor":
-            let opts = parseOptions(args)
+            let opts = try parseOptions(args, allowed: ["bundle-id", "fstype"])
             let bundleID = try optionOrEnvironment(opts, "bundle-id", envKey: "OSIX_FSKIT_BUNDLE_ID", fallback: defaultBundleID)
             let fsType = try optionOrEnvironment(opts, "fstype", envKey: "OSIX_FSKIT_TYPE", fallback: defaultFileSystemType)
             try await requireReady(bundleID: bundleID, fileSystemType: fsType)
         case "mount":
-            let opts = parseOptions(args)
+            let opts = try parseOptions(args, allowed: [
+                "bundle-id",
+                "fstype",
+                "lower",
+                "mode",
+                "source-digest",
+                "source-ref",
+                "target",
+                "upper",
+                "work",
+                "workspace-root",
+            ])
             try await mount(opts)
         case "unmount":
-            let opts = parseOptions(args)
+            let opts = try parseOptions(args, allowed: ["force", "target"])
             try unmount(opts)
         default:
             throw usage("unknown command: \(command)")
@@ -272,7 +283,7 @@ struct OSIxFSKitControl {
     }
 }
 
-func parseOptions(_ args: [String]) -> [String: String] {
+func parseOptions(_ args: [String], allowed: Set<String>) throws -> [String: String] {
     let booleanOptions = Set(["force"])
     var opts: [String: String] = [:]
     var index = 0
@@ -280,6 +291,9 @@ func parseOptions(_ args: [String]) -> [String: String] {
         let arg = args[index]
         if arg.hasPrefix("--") {
             let key = String(arg.dropFirst(2))
+            guard allowed.contains(key) else {
+                throw usage("unknown option --\(key)")
+            }
             if index + 1 < args.count && !args[index + 1].hasPrefix("--") {
                 opts[key] = args[index + 1]
                 index += 2
@@ -291,7 +305,7 @@ func parseOptions(_ args: [String]) -> [String: String] {
                 index += 1
             }
         } else {
-            index += 1
+            throw usage("unexpected argument \(arg)")
         }
     }
     return opts

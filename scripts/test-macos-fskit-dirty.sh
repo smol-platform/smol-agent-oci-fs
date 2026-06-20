@@ -101,6 +101,18 @@ printf "not a directory" > "${tmp}/helper/file-target"
 chmod 0777 "${tmp}/helper/world-upper"
 
 if "${fskitctl}" doctor \
+  --bogus \
+  2> "${tmp}/doctor-unknown-option.err"; then
+  echo "osix-fskitctl accepted doctor unknown option" >&2
+  exit 1
+elif [[ "$?" -ne 64 ]]; then
+  echo "osix-fskitctl doctor unknown option returned unexpected status" >&2
+  cat "${tmp}/doctor-unknown-option.err" >&2
+  exit 1
+fi
+grep -q "unknown option --bogus" "${tmp}/doctor-unknown-option.err"
+
+if "${fskitctl}" doctor \
   --bundle-id \
   --fstype OSIxFS \
   2> "${tmp}/doctor-missing-bundle-id.err"; then
@@ -125,6 +137,44 @@ elif [[ "$?" -ne 64 ]]; then
   exit 1
 fi
 grep -q "missing --fstype" "${tmp}/doctor-missing-fstype.err"
+
+if "${fskitctl}" mount \
+  --target "${tmp}/target" \
+  --source-ref snap \
+  --source-digest "${valid_digest}" \
+  --workspace-root "${tmp}" \
+  --lower "${tmp}/volume/lower" \
+  --upper "${tmp}/volume/upper" \
+  --work "${tmp}/volume/work" \
+  --bogus true \
+  2> "${tmp}/mount-unknown-option.err"; then
+  echo "osix-fskitctl accepted mount unknown option" >&2
+  exit 1
+elif [[ "$?" -ne 64 ]]; then
+  echo "osix-fskitctl mount unknown option returned unexpected status" >&2
+  cat "${tmp}/mount-unknown-option.err" >&2
+  exit 1
+fi
+grep -q "unknown option --bogus" "${tmp}/mount-unknown-option.err"
+
+if "${fskitctl}" mount \
+  stray-argument \
+  --target "${tmp}/target" \
+  --source-ref snap \
+  --source-digest "${valid_digest}" \
+  --workspace-root "${tmp}" \
+  --lower "${tmp}/volume/lower" \
+  --upper "${tmp}/volume/upper" \
+  --work "${tmp}/volume/work" \
+  2> "${tmp}/mount-unexpected-argument.err"; then
+  echo "osix-fskitctl accepted mount unexpected argument" >&2
+  exit 1
+elif [[ "$?" -ne 64 ]]; then
+  echo "osix-fskitctl mount unexpected argument returned unexpected status" >&2
+  cat "${tmp}/mount-unexpected-argument.err" >&2
+  exit 1
+fi
+grep -q "unexpected argument stray-argument" "${tmp}/mount-unexpected-argument.err"
 
 if "${fskitctl}" mount \
   --source-ref snap \
@@ -287,6 +337,19 @@ elif [[ "$?" -ne 64 ]]; then
   exit 1
 fi
 grep -q "unsupported --mode materialized" "${tmp}/bad-mode.err"
+
+if "${fskitctl}" unmount \
+  --target "${tmp}/target" \
+  --bogus \
+  2> "${tmp}/unmount-unknown-option.err"; then
+  echo "osix-fskitctl accepted unmount unknown option" >&2
+  exit 1
+elif [[ "$?" -ne 64 ]]; then
+  echo "osix-fskitctl unmount unknown option returned unexpected status" >&2
+  cat "${tmp}/unmount-unknown-option.err" >&2
+  exit 1
+fi
+grep -q "unknown option --bogus" "${tmp}/unmount-unknown-option.err"
 
 if "${fskitctl}" unmount \
   --target \
