@@ -664,9 +664,16 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
                 throw posixError(current.type == .directory ? EISDIR : EINVAL)
             }
             let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: current.physicalPath))
+            var handleClosed = false
+            defer {
+                if !handleClosed {
+                    try? handle.close()
+                }
+            }
             try handle.seek(toOffset: UInt64(offset))
             let data = try handle.read(upToCount: length) ?? Data()
             try handle.close()
+            handleClosed = true
             let rawBuffer = unsafeBitCast(buffer, to: OSIxMutableFileDataBuffer.self).mutableBytes()
             data.copyBytes(to: rawBuffer.assumingMemoryBound(to: UInt8.self), count: data.count)
             reply(data.count, nil)
@@ -696,9 +703,16 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
                 let path = try ensureUpperFile(for: current)
                 preparedUpperFile = true
                 let handle = try FileHandle(forWritingTo: URL(fileURLWithPath: path))
+                var handleClosed = false
+                defer {
+                    if !handleClosed {
+                        try? handle.close()
+                    }
+                }
                 try handle.seek(toOffset: UInt64(offset))
                 try handle.write(contentsOf: contents)
                 try handle.close()
+                handleClosed = true
                 try flushDirtyIndex()
                 try discardStashedHiddenUpperItem(upperBackup)
                 reply(contents.count, nil)
@@ -758,8 +772,15 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
         var changed = false
         if newAttributes.isValid(.size), itemType == .file {
             let handle = try FileHandle(forWritingTo: URL(fileURLWithPath: path))
+            var handleClosed = false
+            defer {
+                if !handleClosed {
+                    try? handle.close()
+                }
+            }
             try handle.truncate(atOffset: newAttributes.size)
             try handle.close()
+            handleClosed = true
             newAttributes.consumedAttributes.insert(.size)
             changed = true
         }
