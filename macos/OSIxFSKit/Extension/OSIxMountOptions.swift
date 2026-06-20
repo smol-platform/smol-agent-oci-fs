@@ -17,7 +17,11 @@ struct OSIxMountOptions {
     let mode: String?
 
     static func parse(_ options: FSTaskOptions) -> OSIxMountOptions {
-        let values = parseKeyValues(options.taskOptions)
+        parseTaskOptions(options.taskOptions)
+    }
+
+    static func parseTaskOptions(_ taskOptions: [String]) -> OSIxMountOptions {
+        let values = parseKeyValues(taskOptions)
         return OSIxMountOptions(
             bundle: values["bundle"],
             workspace: values["workspace"],

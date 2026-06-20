@@ -1106,9 +1106,35 @@ struct VolumeMetadataSmoke {
 
     static func validateMountOptions(lower: String, upper: String, work: String) throws {
         let validDigest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        let workspace = URL(fileURLWithPath: work).deletingLastPathComponent().path
+        let parsed = OSIxMountOptions.parseTaskOptions([
+            "-o",
+            [
+                "osix.bundle=" + encodeMountOption("io.github.smol-platform.smol-agent-oci-fs.fskit.extension"),
+                "osix.workspace=" + encodeMountOption(workspace),
+                "osix.source_ref=" + encodeMountOption("snap-000001"),
+                "osix.source_digest=" + encodeMountOption(validDigest),
+                "osix.lower=" + encodeMountOption(lower),
+                "osix.upper=" + encodeMountOption(upper),
+                "osix.work=" + encodeMountOption(work),
+                "osix.mode=" + encodeMountOption("overlay"),
+            ].joined(separator: ","),
+        ])
+        guard parsed.bundle == "io.github.smol-platform.smol-agent-oci-fs.fskit.extension",
+              parsed.workspace == workspace,
+              parsed.sourceRef == "snap-000001",
+              parsed.sourceDigest == validDigest,
+              parsed.lower == lower,
+              parsed.upper == upper,
+              parsed.work == work,
+              parsed.mode == "overlay" else {
+            throw SmokeError("mount option parser did not decode helper-style -o payload")
+        }
+        try parsed.validateForMount()
+
         try OSIxMountOptions(
             bundle: nil,
-            workspace: URL(fileURLWithPath: work).deletingLastPathComponent().path,
+            workspace: workspace,
             sourceRef: "snap-000001",
             sourceDigest: validDigest,
             lower: lower,
@@ -1164,6 +1190,14 @@ struct VolumeMetadataSmoke {
             throw SmokeError("mount options accepted symlink workdir")
         } catch is OSIxMountOptionsValidationError {
         }
+    }
+
+    static func encodeMountOption(_ value: String) -> String {
+        Data(value.utf8)
+            .base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
     }
 
     static func setAttributes(volume: OSIxVolume, request: FSItem.SetAttributesRequest, item: FSItem) throws -> FSItem.Attributes {
