@@ -29,6 +29,8 @@ struct VolumeMetadataSmoke {
         let writePath = "agent/workspace/write-me.txt"
         let absentXattrPath = "agent/workspace/absent-xattr.txt"
         let copyFailurePath = "agent/copy-failure/unreadable.txt"
+        let copyFailureRenameDestinationDirectoryPath = "agent/copy-failure-rename-dest"
+        let copyFailureRenameDestinationPath = "agent/copy-failure-rename-dest/renamed.txt"
         let oversizedXattrPath = "agent/xattr-rollback/too-large.txt"
         let existingParentXattrPath = "agent/existing-upper-parent/too-long-name.txt"
         let replaceWhiteoutPath = "agent/workspace/replace-whiteout.txt"
@@ -68,6 +70,7 @@ struct VolumeMetadataSmoke {
         let lowerWriteFile = URL(fileURLWithPath: lower).appendingPathComponent(writePath).path
         let lowerAbsentXattrFile = URL(fileURLWithPath: lower).appendingPathComponent(absentXattrPath).path
         let lowerCopyFailureFile = URL(fileURLWithPath: lower).appendingPathComponent(copyFailurePath).path
+        let lowerCopyFailureRenameDestinationDirectory = URL(fileURLWithPath: lower).appendingPathComponent(copyFailureRenameDestinationDirectoryPath).path
         let lowerOversizedXattrFile = URL(fileURLWithPath: lower).appendingPathComponent(oversizedXattrPath).path
         let lowerExistingParentXattrFile = URL(fileURLWithPath: lower).appendingPathComponent(existingParentXattrPath).path
         let lowerReplaceWhiteoutFile = URL(fileURLWithPath: lower).appendingPathComponent(replaceWhiteoutPath).path
@@ -124,6 +127,8 @@ struct VolumeMetadataSmoke {
         let upperAbsentXattrFile = URL(fileURLWithPath: upper).appendingPathComponent(absentXattrPath).path
         let upperCopyFailureFile = URL(fileURLWithPath: upper).appendingPathComponent(copyFailurePath).path
         let upperCopyFailureDirectory = URL(fileURLWithPath: upper).appendingPathComponent("agent/copy-failure").path
+        let upperCopyFailureRenameDestination = URL(fileURLWithPath: upper).appendingPathComponent(copyFailureRenameDestinationPath).path
+        let upperCopyFailureRenameDestinationDirectory = URL(fileURLWithPath: upper).appendingPathComponent(copyFailureRenameDestinationDirectoryPath).path
         let upperOversizedXattrFile = URL(fileURLWithPath: upper).appendingPathComponent(oversizedXattrPath).path
         let upperOversizedXattrDirectory = URL(fileURLWithPath: upper).appendingPathComponent("agent/xattr-rollback").path
         let upperExistingParentXattrFile = URL(fileURLWithPath: upper).appendingPathComponent(existingParentXattrPath).path
@@ -172,6 +177,7 @@ struct VolumeMetadataSmoke {
         guard chmod(lowerCopyFailureFile, 0) == 0 else {
             throw SmokeError("failed to prepare unreadable copy-up fixture")
         }
+        try FileManager.default.createDirectory(atPath: lowerCopyFailureRenameDestinationDirectory, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(atPath: URL(fileURLWithPath: lowerOversizedXattrFile).deletingLastPathComponent().path, withIntermediateDirectories: true)
         try Data("oversized xattr".utf8).write(to: URL(fileURLWithPath: lowerOversizedXattrFile))
         try FileManager.default.createDirectory(atPath: URL(fileURLWithPath: lowerExistingParentXattrFile).deletingLastPathComponent().path, withIntermediateDirectories: true)
@@ -298,6 +304,24 @@ struct VolumeMetadataSmoke {
             guard !itemExistsNoFollow(upperCopyFailureFile),
                   !FileManager.default.fileExists(atPath: upperCopyFailureDirectory) else {
                 throw SmokeError("failed copy-up left upper copy or parent state")
+            }
+            do {
+                try renameItem(
+                    volume: volume,
+                    item: copyFailureItem,
+                    sourceDirectory: workspaceItem(lower: lower, relativePath: "agent/copy-failure"),
+                    sourceName: FSFileName(string: "unreadable.txt"),
+                    destinationName: FSFileName(string: "renamed.txt"),
+                    destinationDirectory: workspaceItem(lower: lower, relativePath: copyFailureRenameDestinationDirectoryPath)
+                )
+                throw SmokeError("renameItem unexpectedly copied unreadable lower file")
+            } catch let error as NSError where error.domain == NSPOSIXErrorDomain || error.domain == NSCocoaErrorDomain {
+            }
+            guard !itemExistsNoFollow(upperCopyFailureFile),
+                  !itemExistsNoFollow(upperCopyFailureRenameDestination),
+                  !FileManager.default.fileExists(atPath: upperCopyFailureDirectory),
+                  !FileManager.default.fileExists(atPath: upperCopyFailureRenameDestinationDirectory) else {
+                throw SmokeError("failed rename copy-up left upper source or destination parent state")
             }
         }
 

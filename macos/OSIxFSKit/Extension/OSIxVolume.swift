@@ -456,20 +456,31 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
             }
             let sourceCoversLower = lowerItemExists(sourceRelativePath)
             let destinationPath = upperPath(upper, destinationRelativePath)
-            try fileManager.createDirectory(atPath: parentFilesystemPath(destinationPath), withIntermediateDirectories: true)
             if current.type == .directory, sourceCoversLower {
-                try renameLowerCoveringDirectory(current, destinationPath: destinationPath)
-                let sourceUpperPath = upperPath(upper, sourceRelativePath)
-                if itemExists(at: sourceUpperPath) {
-                    try fileManager.removeItem(atPath: sourceUpperPath)
+                let existingDestinationParent = nearestExistingUpperParent(for: destinationRelativePath)
+                var materializedDestination = false
+                do {
+                    try fileManager.createDirectory(atPath: parentFilesystemPath(destinationPath), withIntermediateDirectories: true)
+                    try renameLowerCoveringDirectory(current, destinationPath: destinationPath)
+                    materializedDestination = true
+                    let sourceUpperPath = upperPath(upper, sourceRelativePath)
+                    if itemExists(at: sourceUpperPath) {
+                        try fileManager.removeItem(atPath: sourceUpperPath)
+                    }
+                    try createWhiteout(for: sourceRelativePath)
+                    removeWhiteout(for: destinationRelativePath)
+                    try flushDirtyIndex()
+                    reply(FSFileName(string: newName), nil)
+                    return
+                } catch {
+                    if !materializedDestination {
+                        removeCreatedUpperItemAndEmptyParents(destinationRelativePath, stoppingAt: existingDestinationParent)
+                    }
+                    throw error
                 }
-                try createWhiteout(for: sourceRelativePath)
-                removeWhiteout(for: destinationRelativePath)
-                try flushDirtyIndex()
-                reply(FSFileName(string: newName), nil)
-                return
             }
             let sourcePath = try ensureUpperItem(for: current)
+            try fileManager.createDirectory(atPath: parentFilesystemPath(destinationPath), withIntermediateDirectories: true)
             if itemExists(at: destinationPath) {
                 try fileManager.removeItem(atPath: destinationPath)
             }
