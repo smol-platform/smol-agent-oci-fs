@@ -118,6 +118,24 @@ fi
 grep -q "missing --target" "${tmp}/missing-target.err"
 
 if "${fskitctl}" mount \
+  --target \
+  --source-ref snap \
+  --source-digest "${valid_digest}" \
+  --workspace-root "${tmp}" \
+  --lower "${tmp}/volume/lower" \
+  --upper "${tmp}/volume/upper" \
+  --work "${tmp}/volume/work" \
+  2> "${tmp}/missing-target-value.err"; then
+  echo "osix-fskitctl accepted missing --target value" >&2
+  exit 1
+elif [[ "$?" -ne 64 ]]; then
+  echo "osix-fskitctl missing --target value returned unexpected status" >&2
+  cat "${tmp}/missing-target-value.err" >&2
+  exit 1
+fi
+grep -q "missing --target" "${tmp}/missing-target-value.err"
+
+if "${fskitctl}" mount \
   --target "${tmp}/helper/file-target" \
   --source-ref snap \
   --source-digest "${valid_digest}" \
@@ -243,5 +261,18 @@ elif [[ "$?" -ne 64 ]]; then
   exit 1
 fi
 grep -q "unsupported --mode materialized" "${tmp}/bad-mode.err"
+
+if "${fskitctl}" unmount \
+  --target \
+  --force \
+  2> "${tmp}/unmount-missing-target-value.err"; then
+  echo "osix-fskitctl accepted unmount missing --target value" >&2
+  exit 1
+elif [[ "$?" -ne 64 ]]; then
+  echo "osix-fskitctl unmount missing --target value returned unexpected status" >&2
+  cat "${tmp}/unmount-missing-target-value.err" >&2
+  exit 1
+fi
+grep -q "missing --target" "${tmp}/unmount-missing-target-value.err"
 
 echo "FSKit dirty-index, metadata, and xattr smoke passed"

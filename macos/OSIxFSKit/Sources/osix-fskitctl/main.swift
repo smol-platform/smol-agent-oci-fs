@@ -272,6 +272,7 @@ struct OSIxFSKitControl {
 }
 
 func parseOptions(_ args: [String]) -> [String: String] {
+    let booleanOptions = Set(["force"])
     var opts: [String: String] = [:]
     var index = 0
     while index < args.count {
@@ -281,8 +282,11 @@ func parseOptions(_ args: [String]) -> [String: String] {
             if index + 1 < args.count && !args[index + 1].hasPrefix("--") {
                 opts[key] = args[index + 1]
                 index += 2
-            } else {
+            } else if booleanOptions.contains(key) {
                 opts[key] = "true"
+                index += 1
+            } else {
+                opts[key] = ""
                 index += 1
             }
         } else {
@@ -300,7 +304,7 @@ func required(_ opts: [String: String], _ key: String) throws -> String {
 }
 
 func usage(_ message: String) -> CLIError {
-    CLIError(message: "\(message)\nusage: osix-fskitctl doctor --bundle-id BUNDLE_ID [--fstype TYPE]\n       osix-fskitctl mount --target PATH --lower PATH --upper PATH --work PATH --source-ref REF --source-digest DIGEST --workspace-root PATH [--fstype TYPE]\n       osix-fskitctl unmount --target PATH [--force]", code: 64)
+    CLIError(message: "\(message)\nusage: osix-fskitctl doctor --bundle-id BUNDLE_ID [--fstype TYPE]\n       osix-fskitctl mount --target PATH --lower PATH --upper PATH --work PATH --source-ref REF --source-digest DIGEST --workspace-root PATH [--mode overlay|fuse] [--fstype TYPE]\n       osix-fskitctl unmount --target PATH [--force]", code: 64)
 }
 
 func environment(_ key: String, _ fallback: String) -> String {
