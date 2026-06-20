@@ -36,7 +36,8 @@ struct OSIxFSKitControl {
         switch command {
         case "doctor":
             let opts = parseOptions(args)
-            try await requireReady(bundleID: opts["bundle-id"] ?? environment("OSIX_FSKIT_BUNDLE_ID", defaultBundleID))
+            let fsType = opts["fstype"] ?? environment("OSIX_FSKIT_TYPE", defaultFileSystemType)
+            try await requireReady(bundleID: opts["bundle-id"] ?? environment("OSIX_FSKIT_BUNDLE_ID", defaultBundleID), fileSystemType: fsType)
         case "mount":
             let opts = parseOptions(args)
             try await mount(opts)
@@ -50,7 +51,8 @@ struct OSIxFSKitControl {
 
     static func mount(_ opts: [String: String]) async throws {
         let bundleID = opts["bundle-id"] ?? environment("OSIX_FSKIT_BUNDLE_ID", defaultBundleID)
-        try await requireReady(bundleID: bundleID)
+        let fsType = opts["fstype"] ?? environment("OSIX_FSKIT_TYPE", defaultFileSystemType)
+        try await requireReady(bundleID: bundleID, fileSystemType: fsType)
 
         let target = try required(opts, "target")
         let sourceRef = try required(opts, "source-ref")
@@ -60,7 +62,6 @@ struct OSIxFSKitControl {
         let upper = try required(opts, "upper")
         let work = try required(opts, "work")
         let mode = opts["mode"] ?? "overlay"
-        let fsType = opts["fstype"] ?? environment("OSIX_FSKIT_TYPE", defaultFileSystemType)
 
         try FileManager.default.createDirectory(atPath: target, withIntermediateDirectories: true)
         let mountOptions = [
@@ -86,7 +87,7 @@ struct OSIxFSKitControl {
         try runProcess("/sbin/umount", [target])
     }
 
-    static func requireReady(bundleID: String) async throws {
+    static func requireReady(bundleID: String, fileSystemType: String? = nil) async throws {
         guard FileManager.default.fileExists(atPath: "/System/Library/Frameworks/FSKit.framework") else {
             throw CLIError(message: "FSKit.framework is unavailable; macOS 15.4 or newer is required", code: 69)
         }
@@ -117,6 +118,45 @@ struct OSIxFSKitControl {
                 code: 69
             )
         }
+        if let fileSystemType {
+            try requireModule(module, supportsFileSystemType: fileSystemType)
+        }
+    }
+
+    static func requireModule(_ module: FSModuleIdentity, supportsFileSystemType fileSystemType: String) throws {
+        let names = try declaredFileSystemTypes(for: module)
+        guard names.contains(fileSystemType) else {
+            let declared = names.sorted().joined(separator: ", ")
+            throw CLIError(
+                message: "FSKit extension \(module.bundleIdentifier) is enabled but does not declare filesystem type \(fileSystemType); declared types: \(declared.isEmpty ? "none" : declared)",
+                code: 69
+            )
+        }
+    }
+
+    static func declaredFileSystemTypes(for module: FSModuleIdentity) throws -> Set<String> {
+        let infoURL = module.url.appendingPathComponent("Contents").appendingPathComponent("Info.plist")
+        guard let info = NSDictionary(contentsOf: infoURL) as? [String: Any] else {
+            throw CLIError(message: "failed to read FSKit extension Info.plist at \(infoURL.path)", code: 69)
+        }
+        guard let attributes = info["EXAppExtensionAttributes"] as? [String: Any] else {
+            throw CLIError(message: "FSKit extension \(module.bundleIdentifier) is missing EXAppExtensionAttributes", code: 69)
+        }
+        var names = Set<String>()
+        if let shortName = attributes["FSShortName"] as? String, !shortName.isEmpty {
+            names.insert(shortName)
+        }
+        if let personalities = attributes["FSPersonalities"] as? [String: Any] {
+            for value in personalities.values {
+                guard let personality = value as? [String: Any] else {
+                    continue
+                }
+                if let name = personality["FSName"] as? String, !name.isEmpty {
+                    names.insert(name)
+                }
+            }
+        }
+        return names
     }
 
     static func plugInKitRegistrationState(bundleID: String) throws -> String {
@@ -164,7 +204,7 @@ func required(_ opts: [String: String], _ key: String) throws -> String {
 }
 
 func usage(_ message: String) -> CLIError {
-    CLIError(message: "\(message)\nusage: osix-fskitctl doctor --bundle-id BUNDLE_ID\n       osix-fskitctl mount --target PATH --lower PATH --upper PATH --work PATH --source-ref REF --source-digest DIGEST --workspace-root PATH\n       osix-fskitctl unmount --target PATH [--force]", code: 64)
+    CLIError(message: "\(message)\nusage: osix-fskitctl doctor --bundle-id BUNDLE_ID [--fstype TYPE]\n       osix-fskitctl mount --target PATH --lower PATH --upper PATH --work PATH --source-ref REF --source-digest DIGEST --workspace-root PATH [--fstype TYPE]\n       osix-fskitctl unmount --target PATH [--force]", code: 64)
 }
 
 func environment(_ key: String, _ fallback: String) -> String {

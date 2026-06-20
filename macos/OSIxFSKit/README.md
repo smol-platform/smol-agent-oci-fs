@@ -20,7 +20,9 @@ export OSIX_FSKIT_BUNDLE_ID=com.example.OSIxFSKit.Extension
 ```
 
 The filesystem type passed to `mount -F -t` defaults to `OSIxFS` and can be
-overridden with `OSIX_FSKIT_TYPE`.
+overridden with `OSIX_FSKIT_TYPE`. `osix-fskitctl doctor` checks that the
+enabled extension declares that filesystem type before mounted tests attempt
+`mount -F`.
 
 ## Build And Install
 

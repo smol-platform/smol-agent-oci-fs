@@ -132,7 +132,11 @@ Run the local prerequisite and integration smoke harness with:
 ./scripts/test-macos-fskit.sh
 ```
 
-The helper checks installed FSKit modules through `FSClient` and invokes Darwin `mount -F`. When the extension is unavailable or not enabled, explicit `--mode overlay` and `--mode fuse` return a prerequisite error. `--mode auto` falls back to the materialized runtime.
+The helper checks installed FSKit modules through `FSClient`, verifies the
+enabled extension declares the requested filesystem type, and invokes Darwin
+`mount -F`. When the extension is unavailable or not enabled, explicit `--mode
+overlay` and `--mode fuse` return a prerequisite error. `--mode auto` falls
+back to the materialized runtime.
 
 macOS behavior can differ from Linux overlayfs for case sensitivity, ownership, chmod/chown, and xattrs. Snapshot compatibility is preserved through the OSIx upperdir and whiteout path.
 
