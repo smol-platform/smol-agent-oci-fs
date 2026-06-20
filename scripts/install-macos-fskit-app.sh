@@ -7,6 +7,7 @@ source_app="${OSIX_FSKIT_DIST_DIR:-${repo_root}/.osix-tools/dist/macos}/OSIxFSKi
 target_app="${install_dir}/OSIxFSKitHost.app"
 appex_bundle="${target_app}/Contents/PlugIns/OSIxFSKitExtension.appex"
 bundle_id="${OSIX_FSKIT_BUNDLE_ID:-io.github.smol-platform.smol-agent-oci-fs.fskit.extension}"
+fs_type="${OSIX_FSKIT_TYPE:-OSIxFS}"
 open_after_install=1
 register_after_install=1
 elect_after_install=1
@@ -124,7 +125,7 @@ if [[ -x "${helper}" ]]; then
   if [[ "${wait_ready_seconds}" -gt 0 ]]; then
     deadline=$((SECONDS + wait_ready_seconds))
     while true; do
-      if "${helper}" doctor --bundle-id "${bundle_id}" >/dev/null 2>&1; then
+      if "${helper}" doctor --bundle-id "${bundle_id}" --fstype "${fs_type}" >/dev/null 2>&1; then
         ready=1
         break
       fi
@@ -135,8 +136,8 @@ if [[ -x "${helper}" ]]; then
     done
   fi
   if [[ "${ready}" -eq 1 ]]; then
-    "${helper}" doctor --bundle-id "${bundle_id}"
-  elif ! "${helper}" doctor --bundle-id "${bundle_id}"; then
+    "${helper}" doctor --bundle-id "${bundle_id}" --fstype "${fs_type}"
+  elif ! "${helper}" doctor --bundle-id "${bundle_id}" --fstype "${fs_type}"; then
     echo "enable the OSIx FSKit extension in System Settings > General > Login Items & Extensions > File System Extensions"
     echo "settings URL: ${settings_url}"
     if [[ "${open_settings_on_failure}" == "1" || ( "${open_settings_on_failure}" == "auto" && "${open_after_install}" -eq 1 ) ]]; then

@@ -3,6 +3,8 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export PATH="${repo_root}/.osix-tools/bin:${PATH}"
+bundle_id="${OSIX_FSKIT_BUNDLE_ID:-io.github.smol-platform.smol-agent-oci-fs.fskit.extension}"
+fs_type="${OSIX_FSKIT_TYPE:-OSIxFS}"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "macOS FSKit test requires Darwin; current OS is $(uname -s)" >&2
@@ -11,7 +13,7 @@ fi
 
 "${repo_root}/scripts/install-macos-fskit-app.sh" --no-open --background-register --wait-ready="${OSIX_FSKIT_READY_TIMEOUT:-10}" --no-open-settings
 
-if ! osix-fskitctl doctor --bundle-id "${OSIX_FSKIT_BUNDLE_ID:-io.github.smol-platform.smol-agent-oci-fs.fskit.extension}"; then
+if ! osix-fskitctl doctor --bundle-id "${bundle_id}" --fstype "${fs_type}"; then
   echo "fix the listed FSKit extension prerequisite, then rerun this script" >&2
   echo "for local development, run: ${repo_root}/scripts/install-macos-fskit-app.sh" >&2
   exit 2
