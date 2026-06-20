@@ -89,7 +89,21 @@ KMS-style envelope:
   --decrypt kms:aws:kms:us-east-1:123456789012:key/demo
 ```
 
-The current KMS path is a local deterministic envelope keyed by the recipient string. It exercises OSIx recipient and descriptor semantics without calling AWS KMS.
+Mixed-recipient envelope:
+
+```sh
+./osix snapshot agentfs --tag multi-recipient \
+  --encrypt "age:${RECIPIENT},kms:aws:kms:us-east-1:123456789012:key/demo,gpg:alice@example.com,endpoint:https://keys.example.test/wrap"
+
+./osix restore multi-recipient ./multi-age --decrypt ./age.key
+./osix restore multi-recipient ./multi-kms \
+  --decrypt kms:aws:kms:us-east-1:123456789012:key/demo
+./osix restore multi-recipient ./multi-gpg --decrypt gpg:alice@example.com
+./osix restore multi-recipient ./multi-endpoint \
+  --decrypt endpoint:https://keys.example.test/wrap
+```
+
+Age-only snapshots use age v1 directly. Single `kms:aws:kms:...` snapshots keep the legacy local KMS-style envelope. Mixed-recipient snapshots use the OSIx layer envelope: one random content key encrypted to each recipient. KMS, GPG, and endpoint recipients are local deterministic key-wrap shims keyed by the recipient string in this prototype; they exercise recipient metadata and restore authorization semantics without calling AWS KMS, `gpg`, or a remote service.
 
 ## Watch
 

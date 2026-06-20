@@ -86,6 +86,7 @@ Deliverables:
 - Per-layer random DEK generation.
 - age recipient support.
 - AWS KMS recipient support.
+- Mixed-recipient OSIx envelope support for age, KMS, GPG, and endpoint recipients.
 - Encrypted layer descriptor annotations.
 - Decrypt-on-restore flow.
 - Secret metadata review to avoid leaking path lists in public annotations.

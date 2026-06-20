@@ -627,6 +627,79 @@ func TestKMSStyleEncryptedSnapshotRestore(t *testing.T) {
 	assertFile(t, filepath.Join(restoreDir, "agent", "workspace", "kms.txt"), "kms protected\n")
 }
 
+func TestMixedRecipientEncryptedSnapshotRestore(t *testing.T) {
+	root := t.TempDir()
+	identity, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	identityPath := filepath.Join(root, "age.key")
+	if err := os.WriteFile(identityPath, []byte(identity.String()+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	kmsRecipient := "kms:aws:kms:us-east-1:123456789012:key/demo"
+	gpgRecipient := "gpg:alice@example.com"
+	endpointRecipient := "endpoint:https://keys.example.test/wrap"
+	recipients := strings.Join([]string{
+		"age:" + identity.Recipient().String(),
+		kmsRecipient,
+		gpgRecipient,
+		endpointRecipient,
+	}, ",")
+	if _, err := Init(root, InitOptions{
+		Base:          "example/base:latest",
+		Name:          "agent",
+		StateRef:      "local/agent",
+		Mount:         filepath.Join(root, "fs"),
+		DefaultBranch: "main",
+		Encrypt:       recipients,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fs := filepath.Join(root, "fs")
+	mustWrite(t, filepath.Join(fs, "agent", "workspace", "multi.txt"), "multi recipient protected\n")
+	result, err := Snapshot(root, fs, SnapshotOptions{Tag: "snap-000001"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := findStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, manifest, _, err := s.loadManifest(result.ManifestDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	annotations := manifest.Layers[0].Annotations
+	if annotations["com.osix.encryption.keywrap"] != "osix-envelope" {
+		t.Fatalf("unexpected keywrap annotations: %#v", annotations)
+	}
+	if annotations["com.osix.encryption.recipient_types"] != "age,kms,gpg,endpoint" {
+		t.Fatalf("unexpected recipient types: %#v", annotations)
+	}
+	layerData, err := s.readBlob(manifest.Layers[0].Digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(layerData, []byte("multi recipient protected")) {
+		t.Fatalf("encrypted layer leaked plaintext")
+	}
+	for name, decrypt := range map[string]string{
+		"age":      identityPath,
+		"kms":      kmsRecipient,
+		"gpg":      gpgRecipient,
+		"endpoint": endpointRecipient,
+	} {
+		t.Run(name, func(t *testing.T) {
+			restoreDir := filepath.Join(root, "restore-"+name)
+			if err := Restore(root, "snap-000001", restoreDir, RestoreOptions{Decrypt: decrypt}); err != nil {
+				t.Fatal(err)
+			}
+			assertFile(t, filepath.Join(restoreDir, "agent", "workspace", "multi.txt"), "multi recipient protected\n")
+		})
+	}
+}
+
 func TestSignedSnapshotVerifyAndProvenance(t *testing.T) {
 	root := t.TempDir()
 	if _, err := Init(root, InitOptions{
