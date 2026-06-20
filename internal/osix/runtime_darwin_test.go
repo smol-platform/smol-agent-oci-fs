@@ -29,6 +29,34 @@ func TestDarwinFSKitPrerequisiteError(t *testing.T) {
 	}
 }
 
+func TestDarwinFSKitHelperRequiresExecutableFile(t *testing.T) {
+	root := t.TempDir()
+	helperFile := filepath.Join(root, "osix-fskitctl")
+	if err := os.WriteFile(helperFile, []byte("#!/bin/sh\nexit 0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OSIX_FSKIT_HELPER", helperFile)
+	if _, err := darwinFSKitHelper(); err == nil || !strings.Contains(err.Error(), "not executable") {
+		t.Fatalf("expected non-executable helper error, got %v", err)
+	}
+
+	if err := os.Chmod(helperFile, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if helper, err := darwinFSKitHelper(); err != nil || helper != helperFile {
+		t.Fatalf("expected executable helper %q, got helper=%q err=%v", helperFile, helper, err)
+	}
+
+	helperDir := filepath.Join(root, "helper-dir")
+	if err := os.Mkdir(helperDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OSIX_FSKIT_HELPER", helperDir)
+	if _, err := darwinFSKitHelper(); err == nil || !strings.Contains(err.Error(), "is a directory") {
+		t.Fatalf("expected directory helper error, got %v", err)
+	}
+}
+
 func TestDarwinAutoFallsBackToMaterializedWhenFSKitUnavailable(t *testing.T) {
 	t.Setenv("OSIX_FSKIT_HELPER", filepath.Join(t.TempDir(), "missing-osix-fskitctl"))
 	root := t.TempDir()

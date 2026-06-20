@@ -55,7 +55,7 @@ func darwinFSKitAvailable() error {
 
 func darwinFSKitHelper() (string, error) {
 	if path := strings.TrimSpace(os.Getenv("OSIX_FSKIT_HELPER")); path != "" {
-		if _, err := os.Stat(path); err != nil {
+		if err := validateDarwinFSKitHelper(path); err != nil {
 			return "", fmt.Errorf("OSIX_FSKIT_HELPER points to unavailable helper %q: %w", path, err)
 		}
 		return path, nil
@@ -68,11 +68,25 @@ func darwinFSKitHelper() (string, error) {
 		filepath.Join("macos", "OSIxFSKit", ".build", "release", "osix-fskitctl"),
 		filepath.Join("macos", "OSIxFSKit", ".build", "debug", "osix-fskitctl"),
 	} {
-		if _, err := os.Stat(path); err == nil {
+		if err := validateDarwinFSKitHelper(path); err == nil {
 			return path, nil
 		}
 	}
 	return "", fmt.Errorf("macOS native runtime requires osix-fskitctl; build it with ./scripts/build-macos-fskit.sh or set OSIX_FSKIT_HELPER")
+}
+
+func validateDarwinFSKitHelper(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		return fmt.Errorf("is a directory")
+	}
+	if info.Mode()&0o111 == 0 {
+		return fmt.Errorf("is not executable")
+	}
+	return nil
 }
 
 func darwinFSKitBundleID() string {
