@@ -20,6 +20,8 @@ struct VolumeMetadataSmoke {
         let nameBoundaryRemovePath = "agent/workspace/name-boundary-remove.txt"
         let nameBoundaryRenamePath = "agent/workspace/name-boundary-rename.txt"
         let nameBoundaryRenameDestinationPath = "agent/workspace/name-boundary-renamed.txt"
+        let renameOverLowerFileSourcePath = "agent/workspace/rename-over-lower-file-source.txt"
+        let renameOverLowerFileDestinationPath = "agent/workspace/rename-over-lower-file-dest.txt"
         let failedAttributesPath = "agent/workspace/failed-attrs.txt"
         let cowDeletePath = "agent/workspace/cow-delete.txt"
         let cowRenamePath = "agent/workspace/cow-rename.txt"
@@ -53,6 +55,8 @@ struct VolumeMetadataSmoke {
         let lowerRenameFile = URL(fileURLWithPath: lower).appendingPathComponent(staleRenamePath).path
         let lowerNameBoundaryRemoveFile = URL(fileURLWithPath: lower).appendingPathComponent(nameBoundaryRemovePath).path
         let lowerNameBoundaryRenameFile = URL(fileURLWithPath: lower).appendingPathComponent(nameBoundaryRenamePath).path
+        let lowerRenameOverLowerFileSource = URL(fileURLWithPath: lower).appendingPathComponent(renameOverLowerFileSourcePath).path
+        let lowerRenameOverLowerFileDestination = URL(fileURLWithPath: lower).appendingPathComponent(renameOverLowerFileDestinationPath).path
         let lowerFailedAttributesFile = URL(fileURLWithPath: lower).appendingPathComponent(failedAttributesPath).path
         let lowerCOWDeleteFile = URL(fileURLWithPath: lower).appendingPathComponent(cowDeletePath).path
         let lowerCOWRenameFile = URL(fileURLWithPath: lower).appendingPathComponent(cowRenamePath).path
@@ -95,6 +99,9 @@ struct VolumeMetadataSmoke {
         let upperNameBoundaryRemoveWhiteout = URL(fileURLWithPath: upper).appendingPathComponent("agent/workspace/.wh.name-boundary-remove.txt").path
         let upperNameBoundaryRenameDestination = URL(fileURLWithPath: upper).appendingPathComponent(nameBoundaryRenameDestinationPath).path
         let upperNameBoundaryRenameWhiteout = URL(fileURLWithPath: upper).appendingPathComponent("agent/workspace/.wh.name-boundary-rename.txt").path
+        let upperRenameOverLowerFileDestination = URL(fileURLWithPath: upper).appendingPathComponent(renameOverLowerFileDestinationPath).path
+        let upperRenameOverLowerFileWhiteout = URL(fileURLWithPath: upper).appendingPathComponent("agent/workspace/.wh.rename-over-lower-file-source.txt").path
+        let upperRenameOverLowerFileDestinationWhiteout = URL(fileURLWithPath: upper).appendingPathComponent("agent/workspace/.wh.rename-over-lower-file-dest.txt").path
         let upperFailedAttributesFile = URL(fileURLWithPath: upper).appendingPathComponent(failedAttributesPath).path
         let upperCOWDeleteFile = URL(fileURLWithPath: upper).appendingPathComponent(cowDeletePath).path
         let upperCOWDeleteWhiteout = URL(fileURLWithPath: upper).appendingPathComponent("agent/workspace/.wh.cow-delete.txt").path
@@ -134,6 +141,8 @@ struct VolumeMetadataSmoke {
         try Data("rename".utf8).write(to: URL(fileURLWithPath: lowerRenameFile))
         try Data("name boundary remove".utf8).write(to: URL(fileURLWithPath: lowerNameBoundaryRemoveFile))
         try Data("name boundary rename".utf8).write(to: URL(fileURLWithPath: lowerNameBoundaryRenameFile))
+        try Data("rename over lower source".utf8).write(to: URL(fileURLWithPath: lowerRenameOverLowerFileSource))
+        try Data("rename over lower destination".utf8).write(to: URL(fileURLWithPath: lowerRenameOverLowerFileDestination))
         try Data("failed attrs".utf8).write(to: URL(fileURLWithPath: lowerFailedAttributesFile))
         try Data("cow-delete".utf8).write(to: URL(fileURLWithPath: lowerCOWDeleteFile))
         try Data("cow-rename".utf8).write(to: URL(fileURLWithPath: lowerCOWRenameFile))
@@ -453,6 +462,19 @@ struct VolumeMetadataSmoke {
               (try? String(contentsOfFile: lowerRenameFile, encoding: .utf8)) == "rename" else {
             throw SmokeError("renameItem did not use source parent/name as the authoritative source path")
         }
+        let renameOverLowerFile = OSIxItem(relativePath: renameOverLowerFileSourcePath, physicalPath: lowerRenameOverLowerFileSource, type: .file, source: .lower)
+        try renameItem(volume: volume, item: renameOverLowerFile, sourceDirectory: workspace, sourceName: FSFileName(string: "rename-over-lower-file-source.txt"), destinationName: FSFileName(string: "rename-over-lower-file-dest.txt"), destinationDirectory: workspace)
+        guard FileManager.default.fileExists(atPath: upperRenameOverLowerFileWhiteout),
+              (try? String(contentsOfFile: upperRenameOverLowerFileDestination, encoding: .utf8)) == "rename over lower source",
+              (try? String(contentsOfFile: lowerRenameOverLowerFileDestination, encoding: .utf8)) == "rename over lower destination",
+              !FileManager.default.fileExists(atPath: upperRenameOverLowerFileDestinationWhiteout) else {
+            throw SmokeError("rename over lower file did not cover destination with upper source while preserving lower destination")
+        }
+        do {
+            _ = try getAttributes(volume: volume, item: renameOverLowerFile)
+            throw SmokeError("rename over lower file left source visible")
+        } catch let error as NSError where error.domain == NSPOSIXErrorDomain && error.code == Int(ENOENT) {
+        }
 
         let staleUpperDelete = OSIxItem(relativePath: staleDeletePath, physicalPath: URL(fileURLWithPath: upper).appendingPathComponent(staleDeletePath).path, type: .file, source: .upper)
         try removeItem(volume: volume, item: staleUpperDelete, name: FSFileName(string: "delete-me.txt"), directory: workspace)
@@ -651,6 +673,12 @@ struct VolumeMetadataSmoke {
         }
         guard dirty.paths[nameBoundaryRenameDestinationPath] == "modified" else {
             throw SmokeError("dirty index did not mark name-boundary rename destination modified")
+        }
+        guard dirty.paths[renameOverLowerFileSourcePath] == "deleted" else {
+            throw SmokeError("dirty index did not mark rename-over-lower-file source deleted")
+        }
+        guard dirty.paths[renameOverLowerFileDestinationPath] == "modified" else {
+            throw SmokeError("dirty index did not mark rename-over-lower-file destination modified")
         }
         guard dirty.paths[cowDeletePath] == "deleted" else {
             throw SmokeError("dirty index did not mark COW delete path deleted")
