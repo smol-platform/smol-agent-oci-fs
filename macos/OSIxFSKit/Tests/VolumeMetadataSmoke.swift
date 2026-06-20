@@ -351,8 +351,17 @@ struct VolumeMetadataSmoke {
         guard replyAttributes.size == 2, replyAttributes.mode == 0o600 else {
             throw SmokeError("reply attributes do not reflect upper metadata")
         }
+        try synchronize(volume: volume)
+        guard FileManager.default.fileExists(atPath: dirtyFile) else {
+            throw SmokeError("synchronize did not write dirty index")
+        }
         try? FileManager.default.removeItem(atPath: dirtyFile)
         try FileManager.default.createDirectory(atPath: dirtyFile, withIntermediateDirectories: false)
+        do {
+            try synchronize(volume: volume)
+            throw SmokeError("synchronize succeeded despite dirty flush failure")
+        } catch let error as NSError where error.domain == NSPOSIXErrorDomain || error.domain == NSCocoaErrorDomain {
+        }
         let flushFailureAttributes = FSItem.SetAttributesRequest()
         flushFailureAttributes.size = 1
         flushFailureAttributes.mode = 0o644
@@ -1281,6 +1290,16 @@ struct VolumeMetadataSmoke {
         }
         guard replyCount == data.count else {
             throw SmokeError("write returned \(replyCount) bytes, want \(data.count)")
+        }
+    }
+
+    static func synchronize(volume: OSIxVolume) throws {
+        var replyError: (any Error)?
+        volume.synchronize(flags: FSSyncFlags(rawValue: 0)!) { error in
+            replyError = error
+        }
+        if let replyError {
+            throw replyError
         }
     }
 
