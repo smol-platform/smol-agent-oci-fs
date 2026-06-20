@@ -164,6 +164,41 @@ func TestMountRejectsNonPrivateRuntimeCache(t *testing.T) {
 	}
 }
 
+func TestMountRejectsSymlinkRuntimeCache(t *testing.T) {
+	root := t.TempDir()
+	if _, err := Init(root, InitOptions{
+		Base:          "example/base:latest",
+		Name:          "agent",
+		StateRef:      "local/agent",
+		Mount:         filepath.Join(root, "fs"),
+		DefaultBranch: "main",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fs := filepath.Join(root, "fs")
+	mustWrite(t, filepath.Join(fs, "agent", "workspace", "file.txt"), "v1\n")
+	if _, err := Snapshot(root, fs, SnapshotOptions{Tag: "snap-000001"}); err != nil {
+		t.Fatal(err)
+	}
+	realCache := filepath.Join(root, "real-cache")
+	if err := os.MkdirAll(realCache, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cacheLink := filepath.Join(root, "cache-link")
+	if err := os.Symlink(realCache, cacheLink); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Mount(root, "snap-000001", filepath.Join(root, "mounted"), MountOptions{
+		Force: true,
+		Mode:  MountMaterialized,
+		Cache: cacheLink,
+	})
+	if err == nil || !strings.Contains(err.Error(), "runtime cache") || !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("expected symlink cache error, got %v", err)
+	}
+}
+
 func TestPrepareKernelMountDirsRollsBackFailedLowerRestore(t *testing.T) {
 	root := t.TempDir()
 	if _, err := Init(root, InitOptions{

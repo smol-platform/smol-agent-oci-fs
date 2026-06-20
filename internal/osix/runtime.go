@@ -304,7 +304,7 @@ func prepareRuntimeCache(path string) error {
 	if err := os.MkdirAll(path, 0o700); err != nil {
 		return err
 	}
-	st, err := os.Stat(path)
+	st, err := os.Lstat(path)
 	if err != nil {
 		return err
 	}
