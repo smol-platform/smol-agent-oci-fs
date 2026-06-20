@@ -114,7 +114,7 @@ func fuseMount(ctx context.Context, workspaceRoot, sourceRef, target string, opt
 		return MountInfo{}, fmt.Errorf("start fuse-overlayfs: %w", err)
 	}
 	pid := cmd.Process.Pid
-	_ = os.WriteFile(filepath.Join(root, "fuse-overlayfs.pid"), []byte(strconv.Itoa(pid)+"\n"), 0o600)
+	_ = writePrivateFile(filepath.Join(root, "fuse-overlayfs.pid"), []byte(strconv.Itoa(pid)+"\n"))
 	go cmd.Wait()
 	info := MountInfo{
 		Target:       absPath(target),

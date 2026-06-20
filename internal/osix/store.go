@@ -130,6 +130,13 @@ func (s store) writeBlob(data []byte) (Descriptor, error) {
 	return Descriptor{Digest: digest, Size: int64(len(data))}, nil
 }
 
+func writePrivateFile(path string, data []byte) error {
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o600)
+}
+
 func (s store) readBlob(digest string) ([]byte, error) {
 	hexDigest, err := digestHex(digest)
 	if err != nil {

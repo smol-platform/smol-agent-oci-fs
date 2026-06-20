@@ -476,6 +476,13 @@ func TestStatusPersistsStaleRuntimeStateAndRefreshesDirtyIndex(t *testing.T) {
 	if err := s.writeMount(info); err != nil {
 		t.Fatal(err)
 	}
+	dirtyPath := filepath.Join(filepath.Dir(info.WorkDir), "dirty.json")
+	if err := os.WriteFile(dirtyPath, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dirtyPath, 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	status, err := NewMountRuntime(root, MountAuto).Status(context.Background(), target)
 	if err != nil {
@@ -494,7 +501,7 @@ func TestStatusPersistsStaleRuntimeStateAndRefreshesDirtyIndex(t *testing.T) {
 	if !stored.UpdatedAt.After(info.UpdatedAt) {
 		t.Fatalf("status should refresh updatedAt on persisted state change")
 	}
-	dirty, err := os.ReadFile(filepath.Join(filepath.Dir(info.WorkDir), "dirty.json"))
+	dirty, err := os.ReadFile(dirtyPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -503,6 +510,71 @@ func TestStatusPersistsStaleRuntimeStateAndRefreshesDirtyIndex(t *testing.T) {
 	}
 	if strings.Contains(string(dirty), "copied.txt") {
 		t.Fatalf("dirty index included copied-up unchanged file: %s", dirty)
+	}
+	dirtyStat, err := os.Stat(dirtyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dirtyStat.Mode().Perm() != 0o600 {
+		t.Fatalf("dirty index mode = %o, want 0600", dirtyStat.Mode().Perm())
+	}
+}
+
+func TestWriteMountEnforcesPrivatePermissions(t *testing.T) {
+	root := t.TempDir()
+	if _, err := Init(root, InitOptions{
+		Base:          "example/base:latest",
+		Name:          "agent",
+		StateRef:      "local/agent",
+		Mount:         filepath.Join(root, "fs"),
+		DefaultBranch: "main",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s, err := findStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "mounted")
+	key, err := mountKey(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mountDir := filepath.Join(s.mountsRoot(), key)
+	if err := os.MkdirAll(mountDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	paths := []string{
+		filepath.Join(mountDir, "mount.json"),
+		filepath.Join(s.mountsRoot(), key+".json"),
+	}
+	for _, path := range paths {
+		if err := os.WriteFile(path, []byte("{}"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(path, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.writeMount(MountInfo{
+		Target:       absPath(target),
+		SourceRef:    "snap-000001",
+		SourceDigest: "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+		Mode:         MountMaterialized,
+		State:        "mounted",
+		CreatedAt:    time.Now().UTC().Truncate(time.Second),
+		UpdatedAt:    time.Now().UTC().Truncate(time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range paths {
+		st, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st.Mode().Perm() != 0o600 {
+			t.Fatalf("%s mode = %o, want 0600", path, st.Mode().Perm())
+		}
 	}
 }
 

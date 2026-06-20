@@ -224,7 +224,7 @@ func markUnmounted(workspaceRoot, target string) error {
 
 func persistMountedRuntime(s store, root string, info MountInfo, modeMarker []byte, rollback func() error) (MountInfo, error) {
 	if len(modeMarker) > 0 {
-		if err := os.WriteFile(filepath.Join(root, "mode"), modeMarker, 0o600); err != nil {
+		if err := writePrivateFile(filepath.Join(root, "mode"), modeMarker); err != nil {
 			return MountInfo{}, rollbackMountedRuntime(rollback, err)
 		}
 	}
@@ -329,7 +329,7 @@ func rebuildDirtyIndex(s store, info MountInfo) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return dirtyBytes, os.WriteFile(filepath.Join(filepath.Dir(info.WorkDir), "dirty.json"), data, 0o600)
+	return dirtyBytes, writePrivateFile(filepath.Join(filepath.Dir(info.WorkDir), "dirty.json"), data)
 }
 
 func overlayDirtyState(s store, info MountInfo) ([]TreeEntry, []string, int64, error) {

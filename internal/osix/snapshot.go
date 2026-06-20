@@ -495,10 +495,10 @@ func (s store) writeMount(info MountInfo) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(dir, "mount.json"), data, 0o600); err != nil {
+	if err := writePrivateFile(filepath.Join(dir, "mount.json"), data); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(s.mountsRoot(), key+".json"), data, 0o600)
+	return writePrivateFile(filepath.Join(s.mountsRoot(), key+".json"), data)
 }
 
 func (s store) findMount(target string) (MountInfo, error) {
