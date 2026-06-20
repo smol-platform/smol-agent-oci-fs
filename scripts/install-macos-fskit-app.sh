@@ -6,6 +6,9 @@ install_dir="${OSIX_FSKIT_APP_DIR:-${HOME}/Applications}"
 source_app="${OSIX_FSKIT_DIST_DIR:-${repo_root}/.osix-tools/dist/macos}/OSIxFSKitHost.app"
 target_app="${install_dir}/OSIxFSKitHost.app"
 appex_bundle="${target_app}/Contents/PlugIns/OSIxFSKitExtension.appex"
+host_executable="${target_app}/Contents/MacOS/OSIxFSKitHost"
+extension_executable="${appex_bundle}/Contents/MacOS/OSIxFSKitExtension"
+expected_host_bundle_id="io.github.smol-platform.smol-agent-oci-fs.fskit.host"
 bundle_id="${OSIX_FSKIT_BUNDLE_ID:-io.github.smol-platform.smol-agent-oci-fs.fskit.extension}"
 fs_type="${OSIX_FSKIT_TYPE:-OSIxFS}"
 open_after_install=1
@@ -16,6 +19,57 @@ background_registration_launch=0
 wait_ready_seconds=0
 open_settings_on_failure=auto
 settings_url="x-apple.systempreferences:com.apple.LoginItems-Settings.extension"
+
+verify_installed_app() {
+  if [[ ! -d "${target_app}" ]]; then
+    echo "installed app bundle is missing: ${target_app}" >&2
+    exit 1
+  fi
+  if [[ ! -d "${appex_bundle}" ]]; then
+    echo "installed FSKit extension bundle is missing: ${appex_bundle}" >&2
+    exit 1
+  fi
+  if [[ ! -x "${host_executable}" ]]; then
+    echo "installed host executable is missing or not executable: ${host_executable}" >&2
+    exit 1
+  fi
+  if [[ ! -x "${extension_executable}" ]]; then
+    echo "installed extension executable is missing or not executable: ${extension_executable}" >&2
+    exit 1
+  fi
+
+  plutil -lint \
+    "${target_app}/Contents/Info.plist" \
+    "${appex_bundle}/Contents/Info.plist"
+  codesign --verify --strict "${appex_bundle}"
+  codesign --verify --strict "${target_app}"
+
+  entitlements_plist="$(mktemp "${TMPDIR:-/tmp}/osix-fskit-extension-entitlements.XXXXXX.plist")"
+  codesign -dvvv --entitlements "${entitlements_plist}" "${appex_bundle}" >/dev/null
+  if ! grep -q "com.apple.developer.fskit.fsmodule" "${entitlements_plist}"; then
+    rm -f "${entitlements_plist}"
+    echo "installed extension is missing com.apple.developer.fskit.fsmodule entitlement" >&2
+    exit 1
+  fi
+  rm -f "${entitlements_plist}"
+
+  host_bundle_id="$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "${target_app}/Contents/Info.plist")"
+  extension_bundle_id="$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "${appex_bundle}/Contents/Info.plist")"
+  fs_short_name="$(/usr/libexec/PlistBuddy -c "Print :EXAppExtensionAttributes:FSShortName" "${appex_bundle}/Contents/Info.plist")"
+  fs_personality_name="$(/usr/libexec/PlistBuddy -c "Print :EXAppExtensionAttributes:FSPersonalities:OSIxFSPersonality:FSName" "${appex_bundle}/Contents/Info.plist")"
+  if [[ "${host_bundle_id}" != "${expected_host_bundle_id}" ]]; then
+    echo "installed host bundle id ${host_bundle_id} does not match ${expected_host_bundle_id}" >&2
+    exit 1
+  fi
+  if [[ "${extension_bundle_id}" != "${bundle_id}" ]]; then
+    echo "installed extension bundle id ${extension_bundle_id} does not match ${bundle_id}" >&2
+    exit 1
+  fi
+  if [[ "${fs_short_name}" != "${fs_type}" || "${fs_personality_name}" != "${fs_type}" ]]; then
+    echo "installed extension filesystem type does not declare ${fs_type}" >&2
+    exit 1
+  fi
+}
 
 usage() {
   cat >&2 <<EOF
@@ -84,7 +138,6 @@ if [[ "${build_helper}" -eq 1 ]]; then
 fi
 "${repo_root}/scripts/build-macos-fskit-app.sh"
 
-host_executable="${target_app}/Contents/MacOS/OSIxFSKitHost"
 if pids="$(/usr/bin/pgrep -f "^${host_executable}$" || true)" && [[ -n "${pids}" ]]; then
   /bin/kill ${pids} >/dev/null 2>&1 || true
   sleep 1
@@ -93,6 +146,7 @@ fi
 mkdir -p "${install_dir}"
 rm -rf "${target_app}"
 ditto "${source_app}" "${target_app}"
+verify_installed_app
 
 if [[ "${register_after_install}" -eq 1 ]]; then
   /usr/bin/pluginkit -a "${target_app}" || true
