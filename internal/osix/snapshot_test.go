@@ -297,6 +297,26 @@ func TestSnapshotRestoreTypeChanges(t *testing.T) {
 	assertMode(t, filepath.Join(restore, "agent", "workspace", "mode-dir"), 0o700)
 }
 
+func TestSnapshotRejectsReservedWhiteoutNames(t *testing.T) {
+	root := t.TempDir()
+	if _, err := Init(root, InitOptions{
+		Base:          "example/base:latest",
+		Name:          "agent",
+		StateRef:      "local/agent",
+		Mount:         filepath.Join(root, "fs"),
+		DefaultBranch: "main",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fs := filepath.Join(root, "fs")
+	mustWrite(t, filepath.Join(fs, "agent", "workspace", ".wh.user-data"), "not a whiteout\n")
+
+	_, err := Snapshot(root, fs, SnapshotOptions{Tag: "snap-000001"})
+	if err == nil || !strings.Contains(err.Error(), "reserved overlay whiteout path") {
+		t.Fatalf("expected reserved whiteout snapshot error, got %v", err)
+	}
+}
+
 func TestAgeEncryptedSnapshotRestore(t *testing.T) {
 	root := t.TempDir()
 	identity, err := age.GenerateX25519Identity()

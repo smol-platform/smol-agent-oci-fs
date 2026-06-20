@@ -67,6 +67,9 @@ func Snapshot(workspaceRoot, target string, opts SnapshotOptions) (SnapshotResul
 	if err != nil {
 		return SnapshotResult{}, err
 	}
+	if err := validateNoReservedWhiteoutPaths(tree); err != nil {
+		return SnapshotResult{}, err
+	}
 	layerRoot := target
 	layerEntries, whiteouts := diffLayerEntries(parentTree, tree)
 	if mounted && (mountInfo.Mode == MountOverlay || mountInfo.Mode == MountFUSE) && mountInfo.UpperDir != "" {
@@ -365,6 +368,15 @@ func dirtyBytesForEntries(entries []TreeEntry) int64 {
 		}
 	}
 	return total
+}
+
+func validateNoReservedWhiteoutPaths(entries []TreeEntry) error {
+	for _, entry := range entries {
+		if isOverlayWhiteoutMarker(entry.Path) {
+			return fmt.Errorf("reserved overlay whiteout path %q cannot be snapshotted", entry.Path)
+		}
+	}
+	return nil
 }
 
 func diffTrees(left, right []TreeEntry) []Change {
