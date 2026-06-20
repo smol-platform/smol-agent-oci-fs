@@ -182,22 +182,23 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
                 throw posixError(EEXIST)
             }
             try fileManager.createDirectory(atPath: parentFilesystemPath(target), withIntermediateDirectories: true)
-            try removeHiddenUpperItemIfWhitedOut(relativePath)
+            let stashedHiddenUpperItem = try stashHiddenUpperItemIfWhitedOut(relativePath)
             var createdTarget = false
-            switch type {
-            case .directory:
-                try fileManager.createDirectory(atPath: target, withIntermediateDirectories: false)
-                createdTarget = true
-            case .file:
-                if !fileManager.createFile(atPath: target, contents: Data()) {
-                    throw posixError(EIO)
-                }
-                createdTarget = true
-            default:
-                throw posixError(ENOTSUP)
-            }
             do {
+                switch type {
+                case .directory:
+                    try fileManager.createDirectory(atPath: target, withIntermediateDirectories: false)
+                    createdTarget = true
+                case .file:
+                    if !fileManager.createFile(atPath: target, contents: Data()) {
+                        throw posixError(EIO)
+                    }
+                    createdTarget = true
+                default:
+                    throw posixError(ENOTSUP)
+                }
                 _ = try applyAttributes(newAttributes, to: target, itemType: type)
+                try discardStashedHiddenUpperItem(stashedHiddenUpperItem)
                 removeWhiteout(for: relativePath)
                 let item = resolveItem(relativePath)
                 try flushDirtyIndex()
@@ -206,6 +207,7 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
                 if createdTarget {
                     removeCreatedUpperItemAndEmptyParents(relativePath, stoppingAt: existingUpperParent)
                 }
+                try restoreStashedHiddenUpperItem(stashedHiddenUpperItem)
                 throw error
             }
         } catch {
@@ -231,16 +233,22 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
                 throw posixError(EEXIST)
             }
             try fileManager.createDirectory(atPath: parentFilesystemPath(target), withIntermediateDirectories: true)
-            try removeHiddenUpperItemIfWhitedOut(relativePath)
-            try fileManager.createSymbolicLink(atPath: target, withDestinationPath: destination)
+            let stashedHiddenUpperItem = try stashHiddenUpperItemIfWhitedOut(relativePath)
+            var createdTarget = false
             do {
+                try fileManager.createSymbolicLink(atPath: target, withDestinationPath: destination)
+                createdTarget = true
                 _ = try applyAttributes(newAttributes, to: target, itemType: .symlink)
+                try discardStashedHiddenUpperItem(stashedHiddenUpperItem)
                 removeWhiteout(for: relativePath)
                 let item = resolveItem(relativePath)
                 try flushDirtyIndex()
                 reply(item, FSFileName(string: rawName), item == nil ? posixError(ENOENT) : nil)
             } catch {
-                removeCreatedUpperItemAndEmptyParents(relativePath, stoppingAt: existingUpperParent)
+                if createdTarget {
+                    removeCreatedUpperItemAndEmptyParents(relativePath, stoppingAt: existingUpperParent)
+                }
+                try restoreStashedHiddenUpperItem(stashedHiddenUpperItem)
                 throw error
             }
         } catch {
@@ -912,18 +920,43 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
         }
     }
 
-    private func removeHiddenUpperItemIfWhitedOut(_ relativePath: String) throws {
+    private struct StashedHiddenUpperItem {
+        let originalPath: String
+        let stashedPath: String
+    }
+
+    private func stashHiddenUpperItemIfWhitedOut(_ relativePath: String) throws -> StashedHiddenUpperItem? {
         guard let upper = mountOptions?.upper else {
-            return
+            return nil
         }
         let whiteout = whiteoutPath(upper: upper, relativePath: relativePath)
         guard fileManager.fileExists(atPath: whiteout) else {
-            return
+            return nil
         }
         let target = upperPath(upper, relativePath)
-        if itemExists(at: target) {
-            try fileManager.removeItem(atPath: target)
+        guard itemExists(at: target) else {
+            return nil
         }
+        let stashedPath = target + ".osix-hidden-" + UUID().uuidString
+        try fileManager.moveItem(atPath: target, toPath: stashedPath)
+        return StashedHiddenUpperItem(originalPath: target, stashedPath: stashedPath)
+    }
+
+    private func discardStashedHiddenUpperItem(_ item: StashedHiddenUpperItem?) throws {
+        guard let item, itemExists(at: item.stashedPath) else {
+            return
+        }
+        try fileManager.removeItem(atPath: item.stashedPath)
+    }
+
+    private func restoreStashedHiddenUpperItem(_ item: StashedHiddenUpperItem?) throws {
+        guard let item, itemExists(at: item.stashedPath) else {
+            return
+        }
+        if itemExists(at: item.originalPath) {
+            try fileManager.removeItem(atPath: item.originalPath)
+        }
+        try fileManager.moveItem(atPath: item.stashedPath, toPath: item.originalPath)
     }
 
     private func lowerItemExists(_ relativePath: String) -> Bool {
