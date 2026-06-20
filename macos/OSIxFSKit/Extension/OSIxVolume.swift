@@ -30,6 +30,10 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
 
     var volumeStatistics: FSStatFSResult {
         let stats = FSStatFSResult(fileSystemTypeName: "OSIxFS")
+        if let statsPath = mountOptions?.upper ?? mountOptions?.lower ?? mountOptions?.workspace,
+           populateVolumeStatistics(stats, from: statsPath) {
+            return stats
+        }
         stats.blockSize = 4096
         stats.ioSize = 1024 * 1024
         stats.totalBytes = 1 << 40
@@ -38,6 +42,30 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
         stats.totalFiles = 1_000_000
         stats.freeFiles = 999_999
         return stats
+    }
+
+    private func populateVolumeStatistics(_ stats: FSStatFSResult, from path: String) -> Bool {
+        var statBuffer = statfs()
+        guard statfs(path, &statBuffer) == 0 else {
+            return false
+        }
+        let blockSize = max(Int(statBuffer.f_bsize), 1)
+        let totalBlocks = UInt64(statBuffer.f_blocks)
+        let freeBlocks = UInt64(statBuffer.f_bfree)
+        let availableBlocks = UInt64(max(statBuffer.f_bavail, 0))
+        stats.blockSize = blockSize
+        stats.ioSize = max(Int(statBuffer.f_iosize), blockSize)
+        stats.totalBytes = bytesFromBlocks(totalBlocks, blockSize: blockSize)
+        stats.freeBytes = bytesFromBlocks(freeBlocks, blockSize: blockSize)
+        stats.availableBytes = bytesFromBlocks(availableBlocks, blockSize: blockSize)
+        stats.totalFiles = UInt64(statBuffer.f_files)
+        stats.freeFiles = UInt64(statBuffer.f_ffree)
+        return true
+    }
+
+    private func bytesFromBlocks(_ blocks: UInt64, blockSize: Int) -> UInt64 {
+        let result = blocks.multipliedReportingOverflow(by: UInt64(blockSize))
+        return result.overflow ? UInt64.max : result.partialValue
     }
 
     var maximumLinkCount: Int { 1 }

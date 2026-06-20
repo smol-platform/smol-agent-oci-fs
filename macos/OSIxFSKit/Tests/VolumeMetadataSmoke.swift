@@ -323,6 +323,21 @@ struct VolumeMetadataSmoke {
               volume.maximumLinkCount == 1 else {
             throw SmokeError("volume capabilities do not match supported FSKit operation surface")
         }
+        let volumeStats = volume.volumeStatistics
+        var upperStats = statfs()
+        guard statfs(upper, &upperStats) == 0 else {
+            throw SmokeError("failed to statfs upperdir")
+        }
+        let backingBlockSize = max(Int(upperStats.f_bsize), 1)
+        guard volumeStats.blockSize == backingBlockSize,
+              volumeStats.ioSize == max(Int(upperStats.f_iosize), backingBlockSize),
+              volumeStats.totalBytes == UInt64(upperStats.f_blocks) * UInt64(backingBlockSize),
+              volumeStats.freeBytes == UInt64(upperStats.f_bfree) * UInt64(backingBlockSize),
+              volumeStats.availableBytes == UInt64(max(upperStats.f_bavail, 0)) * UInt64(backingBlockSize),
+              volumeStats.totalFiles == UInt64(upperStats.f_files),
+              volumeStats.freeFiles == UInt64(upperStats.f_ffree) else {
+            throw SmokeError("volume statistics do not reflect backing upperdir statfs data")
+        }
         let item = OSIxItem(relativePath: relativePath, physicalPath: lowerFile, type: .file, source: .lower)
         let request = FSItem.SetAttributesRequest()
         request.size = 2
