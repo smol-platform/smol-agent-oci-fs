@@ -317,6 +317,39 @@ func TestSnapshotRejectsReservedWhiteoutNames(t *testing.T) {
 	}
 }
 
+func TestExtractLayerRejectsSymlinkTraversal(t *testing.T) {
+	restore := t.TempDir()
+	outside := t.TempDir()
+	layer := rawLayer(t, func(tw *tar.Writer) {
+		if err := tw.WriteHeader(&tar.Header{
+			Name:     "agent/workspace/link",
+			Typeflag: tar.TypeSymlink,
+			Linkname: outside,
+			Mode:     0o777,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		payload := []byte("escaped\n")
+		if err := tw.WriteHeader(&tar.Header{
+			Name:     "agent/workspace/link/owned.txt",
+			Typeflag: tar.TypeReg,
+			Mode:     0o644,
+			Size:     int64(len(payload)),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write(payload); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	err := extractLayer(layer, restore)
+	if err == nil || !strings.Contains(err.Error(), "refusing to extract through symlink") {
+		t.Fatalf("expected symlink traversal extraction error, got %v", err)
+	}
+	assertMissing(t, filepath.Join(outside, "owned.txt"))
+}
+
 func TestAgeEncryptedSnapshotRestore(t *testing.T) {
 	root := t.TempDir()
 	identity, err := age.GenerateX25519Identity()
@@ -576,4 +609,26 @@ func assertLayerEntries(t *testing.T, root, manifestDigest string, want []string
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("layer entries mismatch\nwant: %#v\n got: %#v", want, got)
 	}
+}
+
+func rawLayer(t *testing.T, write func(*tar.Writer)) []byte {
+	t.Helper()
+	var tarBuf bytes.Buffer
+	tw := tar.NewWriter(&tarBuf)
+	write(tw)
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var zstdBuf bytes.Buffer
+	zw, err := zstd.NewWriter(&zstdBuf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := zw.Write(tarBuf.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return zstdBuf.Bytes()
 }

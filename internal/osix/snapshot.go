@@ -736,6 +736,9 @@ func extractLayer(data []byte, target string) error {
 		}
 		switch hdr.Typeflag {
 		case tar.TypeDir:
+			if err := ensureNoSymlinkInPath(target, path); err != nil {
+				return err
+			}
 			if err := os.MkdirAll(path, fs.FileMode(hdr.Mode)); err != nil {
 				return err
 			}
@@ -743,7 +746,14 @@ func extractLayer(data []byte, target string) error {
 				return err
 			}
 		case tar.TypeReg, tar.TypeRegA:
-			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			parent := filepath.Dir(path)
+			if err := ensureNoSymlinkInPath(target, parent); err != nil {
+				return err
+			}
+			if err := os.MkdirAll(parent, 0o755); err != nil {
+				return err
+			}
+			if err := ensureNotSymlink(path); err != nil {
 				return err
 			}
 			f, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, fs.FileMode(hdr.Mode))
@@ -762,7 +772,11 @@ func extractLayer(data []byte, target string) error {
 				return err
 			}
 		case tar.TypeSymlink:
-			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			parent := filepath.Dir(path)
+			if err := ensureNoSymlinkInPath(target, parent); err != nil {
+				return err
+			}
+			if err := os.MkdirAll(parent, 0o755); err != nil {
 				return err
 			}
 			if err := os.RemoveAll(path); err != nil {
@@ -774,6 +788,53 @@ func extractLayer(data []byte, target string) error {
 		default:
 			return fmt.Errorf("unsupported tar entry %q type %v", hdr.Name, hdr.Typeflag)
 		}
+	}
+	return nil
+}
+
+func ensureNoSymlinkInPath(root, path string) error {
+	root = filepath.Clean(root)
+	path = filepath.Clean(path)
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return err
+	}
+	if rel == "." {
+		return nil
+	}
+	if strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." || filepath.IsAbs(rel) {
+		return fmt.Errorf("unsafe extraction path %q escapes target", path)
+	}
+	current := root
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to extract through symlink %s", current)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("refusing to extract through non-directory %s", current)
+		}
+	}
+	return nil
+}
+
+func ensureNotSymlink(path string) error {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing to overwrite symlink %s without whiteout", path)
 	}
 	return nil
 }
