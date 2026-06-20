@@ -283,7 +283,7 @@ func validateRuntimePermissions(info MountInfo) error {
 			}
 			continue
 		}
-		st, err := os.Stat(dir.path)
+		st, err := os.Lstat(dir.path)
 		if err != nil {
 			return fmt.Errorf("runtime directory %s is unavailable: %w", dir.path, err)
 		}
