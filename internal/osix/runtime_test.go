@@ -164,6 +164,37 @@ func TestMountRejectsNonPrivateRuntimeCache(t *testing.T) {
 	}
 }
 
+func TestPrepareKernelMountDirsRollsBackFailedLowerRestore(t *testing.T) {
+	root := t.TempDir()
+	if _, err := Init(root, InitOptions{
+		Base:          "example/base:latest",
+		Name:          "agent",
+		StateRef:      "local/agent",
+		Mount:         filepath.Join(root, "fs"),
+		DefaultBranch: "main",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "merged")
+	s, err := findStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mountID, err := mountKey(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mountRoot := filepath.Join(s.mountsRoot(), mountID)
+
+	_, _, _, _, err = prepareKernelMountDirs(root, "missing-snapshot", target, MountOptions{})
+	if err == nil || !strings.Contains(err.Error(), "prepare lowerdir") {
+		t.Fatalf("expected lowerdir restore failure, got %v", err)
+	}
+	if _, statErr := os.Stat(mountRoot); !os.IsNotExist(statErr) {
+		t.Fatalf("failed mount prep should remove newly-created runtime root, stat err=%v", statErr)
+	}
+}
+
 func TestRecoverRejectsWorldWritableUpperdir(t *testing.T) {
 	root := t.TempDir()
 	if _, err := Init(root, InitOptions{
