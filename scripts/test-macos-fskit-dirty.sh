@@ -98,6 +98,8 @@ valid_digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 
 mkdir -p "${tmp}/helper/lower" "${tmp}/helper/upper" "${tmp}/helper/work" "${tmp}/helper/nested-upper/work" "${tmp}/helper/world-upper"
 printf "not a directory" > "${tmp}/helper/file-target"
+ln -s "${tmp}/helper/lower" "${tmp}/helper/lower-link"
+ln -s "${tmp}/helper/upper" "${tmp}/helper/upper-link"
 chmod 0777 "${tmp}/helper/world-upper"
 
 if "${fskitctl}" doctor \
@@ -246,6 +248,42 @@ elif [[ "$?" -ne 64 ]]; then
   exit 1
 fi
 grep -q -- "--lower .* is unavailable" "${tmp}/missing-lower.err"
+
+if "${fskitctl}" mount \
+  --target "${tmp}/target" \
+  --source-ref snap \
+  --source-digest "${valid_digest}" \
+  --workspace-root "${tmp}" \
+  --lower "${tmp}/helper/lower-link" \
+  --upper "${tmp}/helper/upper" \
+  --work "${tmp}/helper/work" \
+  2> "${tmp}/symlink-lower.err"; then
+  echo "osix-fskitctl accepted symlink --lower" >&2
+  exit 1
+elif [[ "$?" -ne 64 ]]; then
+  echo "osix-fskitctl symlink --lower returned unexpected status" >&2
+  cat "${tmp}/symlink-lower.err" >&2
+  exit 1
+fi
+grep -q -- "--lower .* is not a directory" "${tmp}/symlink-lower.err"
+
+if "${fskitctl}" mount \
+  --target "${tmp}/target" \
+  --source-ref snap \
+  --source-digest "${valid_digest}" \
+  --workspace-root "${tmp}" \
+  --lower "${tmp}/helper/lower" \
+  --upper "${tmp}/helper/upper-link" \
+  --work "${tmp}/helper/work" \
+  2> "${tmp}/symlink-upper.err"; then
+  echo "osix-fskitctl accepted symlink --upper" >&2
+  exit 1
+elif [[ "$?" -ne 64 ]]; then
+  echo "osix-fskitctl symlink --upper returned unexpected status" >&2
+  cat "${tmp}/symlink-upper.err" >&2
+  exit 1
+fi
+grep -q -- "--upper .* is not a directory" "${tmp}/symlink-upper.err"
 
 if "${fskitctl}" mount \
   --target "${tmp}/target" \

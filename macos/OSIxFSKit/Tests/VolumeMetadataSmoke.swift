@@ -1409,6 +1409,22 @@ struct VolumeMetadataSmoke {
             throw SmokeError("mount options accepted symlink workdir")
         } catch is OSIxMountOptionsValidationError {
         }
+
+        let lowerSymlink = URL(fileURLWithPath: work).deletingLastPathComponent().appendingPathComponent("lower-link").path
+        try FileManager.default.createSymbolicLink(atPath: lowerSymlink, withDestinationPath: lower)
+        do {
+            try OSIxMountOptions(bundle: nil, workspace: work, sourceRef: "snap-000001", sourceDigest: validDigest, lower: lowerSymlink, upper: upper, work: work, mode: "overlay").validateForMount()
+            throw SmokeError("mount options accepted symlink lowerdir")
+        } catch is OSIxMountOptionsValidationError {
+        }
+
+        let upperSymlink = URL(fileURLWithPath: work).deletingLastPathComponent().appendingPathComponent("upper-link").path
+        try FileManager.default.createSymbolicLink(atPath: upperSymlink, withDestinationPath: upper)
+        do {
+            try OSIxMountOptions(bundle: nil, workspace: work, sourceRef: "snap-000001", sourceDigest: validDigest, lower: lower, upper: upperSymlink, work: work, mode: "overlay").validateForMount()
+            throw SmokeError("mount options accepted symlink upperdir")
+        } catch is OSIxMountOptionsValidationError {
+        }
     }
 
     static func encodeMountOption(_ value: String) -> String {
