@@ -29,6 +29,7 @@ struct VolumeMetadataSmoke {
         let writePath = "agent/workspace/write-me.txt"
         let absentXattrPath = "agent/workspace/absent-xattr.txt"
         let oversizedXattrPath = "agent/xattr-rollback/too-large.txt"
+        let existingParentXattrPath = "agent/existing-upper-parent/too-long-name.txt"
         let replaceWhiteoutPath = "agent/workspace/replace-whiteout.txt"
         let replaceHiddenWhiteoutPath = "agent/workspace/replace-hidden-whiteout.txt"
         let rollbackWhiteoutPath = "agent/workspace/rollback-whiteout.txt"
@@ -65,6 +66,7 @@ struct VolumeMetadataSmoke {
         let lowerWriteFile = URL(fileURLWithPath: lower).appendingPathComponent(writePath).path
         let lowerAbsentXattrFile = URL(fileURLWithPath: lower).appendingPathComponent(absentXattrPath).path
         let lowerOversizedXattrFile = URL(fileURLWithPath: lower).appendingPathComponent(oversizedXattrPath).path
+        let lowerExistingParentXattrFile = URL(fileURLWithPath: lower).appendingPathComponent(existingParentXattrPath).path
         let lowerReplaceWhiteoutFile = URL(fileURLWithPath: lower).appendingPathComponent(replaceWhiteoutPath).path
         let lowerReplaceHiddenWhiteoutFile = URL(fileURLWithPath: lower).appendingPathComponent(replaceHiddenWhiteoutPath).path
         let lowerRollbackWhiteoutFile = URL(fileURLWithPath: lower).appendingPathComponent(rollbackWhiteoutPath).path
@@ -117,6 +119,8 @@ struct VolumeMetadataSmoke {
         let upperAbsentXattrFile = URL(fileURLWithPath: upper).appendingPathComponent(absentXattrPath).path
         let upperOversizedXattrFile = URL(fileURLWithPath: upper).appendingPathComponent(oversizedXattrPath).path
         let upperOversizedXattrDirectory = URL(fileURLWithPath: upper).appendingPathComponent("agent/xattr-rollback").path
+        let upperExistingParentXattrFile = URL(fileURLWithPath: upper).appendingPathComponent(existingParentXattrPath).path
+        let upperExistingParentXattrDirectory = URL(fileURLWithPath: upper).appendingPathComponent("agent/existing-upper-parent").path
         let upperReplaceWhiteoutFile = URL(fileURLWithPath: upper).appendingPathComponent(replaceWhiteoutPath).path
         let upperReplaceWhiteout = URL(fileURLWithPath: upper).appendingPathComponent("agent/workspace/.wh.replace-whiteout.txt").path
         let upperReplaceHiddenWhiteoutFile = URL(fileURLWithPath: upper).appendingPathComponent(replaceHiddenWhiteoutPath).path
@@ -158,6 +162,8 @@ struct VolumeMetadataSmoke {
         try Data("absent xattr".utf8).write(to: URL(fileURLWithPath: lowerAbsentXattrFile))
         try FileManager.default.createDirectory(atPath: URL(fileURLWithPath: lowerOversizedXattrFile).deletingLastPathComponent().path, withIntermediateDirectories: true)
         try Data("oversized xattr".utf8).write(to: URL(fileURLWithPath: lowerOversizedXattrFile))
+        try FileManager.default.createDirectory(atPath: URL(fileURLWithPath: lowerExistingParentXattrFile).deletingLastPathComponent().path, withIntermediateDirectories: true)
+        try Data("existing parent xattr".utf8).write(to: URL(fileURLWithPath: lowerExistingParentXattrFile))
         try Data("hidden lower".utf8).write(to: URL(fileURLWithPath: lowerReplaceWhiteoutFile))
         try Data("hidden lower poisoned".utf8).write(to: URL(fileURLWithPath: lowerReplaceHiddenWhiteoutFile))
         try Data("rollback lower".utf8).write(to: URL(fileURLWithPath: lowerRollbackWhiteoutFile))
@@ -189,6 +195,7 @@ struct VolumeMetadataSmoke {
         try setRawXattr(path: lowerXattrDirectory, name: "osix.policy", value: Data("lower".utf8), options: 0)
         try FileManager.default.createDirectory(atPath: URL(fileURLWithPath: upperNonEmptyFile).deletingLastPathComponent().path, withIntermediateDirectories: true)
         try Data("upper child".utf8).write(to: URL(fileURLWithPath: upperNonEmptyFile))
+        try FileManager.default.createDirectory(atPath: upperExistingParentXattrDirectory, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(atPath: URL(fileURLWithPath: upperRenameOverUpperDirectoryDestinationFile).deletingLastPathComponent().path, withIntermediateDirectories: true)
         try Data("upper dir child".utf8).write(to: URL(fileURLWithPath: upperRenameOverUpperDirectoryDestinationFile))
         try FileManager.default.createDirectory(atPath: URL(fileURLWithPath: upperReplaceWhiteout).deletingLastPathComponent().path, withIntermediateDirectories: true)
@@ -591,6 +598,16 @@ struct VolumeMetadataSmoke {
         guard !itemExistsNoFollow(upperOversizedXattrFile),
               !FileManager.default.fileExists(atPath: upperOversizedXattrDirectory) else {
             throw SmokeError("failed oversized xattr left upper copy or parent state")
+        }
+        let existingParentXattrItem = OSIxItem(relativePath: existingParentXattrPath, physicalPath: lowerExistingParentXattrFile, type: .file, source: .lower)
+        do {
+            try setXattr(volume: volume, name: FSFileName(string: String(repeating: "p", count: 128)), value: Data("bad".utf8), item: existingParentXattrItem, policy: .alwaysSet)
+            throw SmokeError("setXattr accepted oversized name with existing upper parent")
+        } catch let error as NSError where error.domain == NSPOSIXErrorDomain {
+        }
+        guard !itemExistsNoFollow(upperExistingParentXattrFile),
+              FileManager.default.fileExists(atPath: upperExistingParentXattrDirectory) else {
+            throw SmokeError("failed oversized xattr removed preexisting upper parent or left upper copy")
         }
         let upperDanglingRemoveItem = OSIxItem(relativePath: upperDanglingRemovePath, physicalPath: upperDanglingRemove, type: .symlink, source: .upper)
         try removeItem(volume: volume, item: upperDanglingRemoveItem, name: FSFileName(string: "upper-dangling-remove"), directory: workspace)
