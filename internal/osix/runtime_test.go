@@ -38,6 +38,9 @@ func TestMountRuntimeMaterializedStatusUnmountRecover(t *testing.T) {
 	if info.Mode != MountMaterialized {
 		t.Fatalf("mount mode = %q, want %q", info.Mode, MountMaterialized)
 	}
+	if !info.RW {
+		t.Fatalf("materialized mount should default to writable metadata")
+	}
 	if info.UpperDir != mountDir || info.WorkDir == "" || info.State != "mounted" {
 		t.Fatalf("unexpected mount info: %#v", info)
 	}

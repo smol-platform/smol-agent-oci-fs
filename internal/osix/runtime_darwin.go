@@ -157,7 +157,9 @@ func darwinFSKitMount(ctx context.Context, workspaceRoot, sourceRef, target stri
 		"--work", work,
 		"--mode", string(mode),
 	}
-	if opts.RW {
+	if opts.ReadOnly {
+		args = append(args, "--rw", "false")
+	} else if opts.RW {
 		args = append(args, "--rw", "true")
 	}
 	cmd := exec.CommandContext(ctx, helper, args...)
@@ -173,7 +175,7 @@ func darwinFSKitMount(ctx context.Context, workspaceRoot, sourceRef, target stri
 		SourceDigest: digest,
 		Mode:         mode,
 		Branch:       opts.Branch,
-		RW:           opts.RW,
+		RW:           mountAllowsWrites(opts),
 		UpperDir:     upper,
 		WorkDir:      work,
 		LowerDir:     lower,

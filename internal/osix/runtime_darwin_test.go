@@ -174,6 +174,19 @@ func TestDarwinFSKitMountPassesAbsoluteTargetToHelper(t *testing.T) {
 	args = strings.Split(strings.TrimSpace(string(argsData)), "\n")
 	assertFlagValue(t, args, "--target", absPath(defaultTarget))
 	assertFlagMissing(t, args, "--rw")
+
+	readOnlyTarget := "read-only-mount"
+	_, err = darwinFSKitMount(context.Background(), root, "snap-000001", readOnlyTarget, MountOptions{Force: true, ReadOnly: true, Mode: MountOverlay}, MountOverlay)
+	if err == nil {
+		t.Fatalf("expected fake helper mount failure")
+	}
+	argsData, err = os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args = strings.Split(strings.TrimSpace(string(argsData)), "\n")
+	assertFlagValue(t, args, "--target", absPath(readOnlyTarget))
+	assertFlagValue(t, args, "--rw", "false")
 }
 
 func TestDarwinFSKitUnmountUsesStoredTarget(t *testing.T) {

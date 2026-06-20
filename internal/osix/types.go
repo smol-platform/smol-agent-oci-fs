@@ -145,13 +145,14 @@ const (
 )
 
 type MountOptions struct {
-	Force   bool
-	RW      bool
-	Branch  string
-	Decrypt string
-	Mode    MountMode
-	Cache   string
-	Lazy    bool
+	Force    bool
+	RW       bool
+	ReadOnly bool
+	Branch   string
+	Decrypt  string
+	Mode     MountMode
+	Cache    string
+	Lazy     bool
 }
 
 type MountInfo struct {

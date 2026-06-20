@@ -141,7 +141,7 @@ func (r materializedRuntime) Mount(ctx context.Context, sourceRef string, target
 		SourceDigest: digest,
 		Mode:         MountMaterialized,
 		Branch:       opts.Branch,
-		RW:           opts.RW,
+		RW:           mountAllowsWrites(opts),
 		UpperDir:     absPath(target),
 		WorkDir:      filepath.Join(root, "work"),
 		State:        "mounted",
@@ -156,6 +156,10 @@ func (r materializedRuntime) Mount(ctx context.Context, sourceRef string, target
 		return MountInfo{}, err
 	}
 	return info, nil
+}
+
+func mountAllowsWrites(opts MountOptions) bool {
+	return !opts.ReadOnly
 }
 
 func normalizeMountMode(mode MountMode) MountMode {
