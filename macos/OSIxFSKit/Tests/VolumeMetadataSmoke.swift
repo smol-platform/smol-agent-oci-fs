@@ -28,6 +28,7 @@ struct VolumeMetadataSmoke {
         let cowRenameDestinationPath = "agent/workspace/cow-renamed.txt"
         let writePath = "agent/workspace/write-me.txt"
         let absentXattrPath = "agent/workspace/absent-xattr.txt"
+        let oversizedXattrPath = "agent/xattr-rollback/too-large.txt"
         let replaceWhiteoutPath = "agent/workspace/replace-whiteout.txt"
         let replaceHiddenWhiteoutPath = "agent/workspace/replace-hidden-whiteout.txt"
         let rollbackWhiteoutPath = "agent/workspace/rollback-whiteout.txt"
@@ -63,6 +64,7 @@ struct VolumeMetadataSmoke {
         let lowerCOWRenameFile = URL(fileURLWithPath: lower).appendingPathComponent(cowRenamePath).path
         let lowerWriteFile = URL(fileURLWithPath: lower).appendingPathComponent(writePath).path
         let lowerAbsentXattrFile = URL(fileURLWithPath: lower).appendingPathComponent(absentXattrPath).path
+        let lowerOversizedXattrFile = URL(fileURLWithPath: lower).appendingPathComponent(oversizedXattrPath).path
         let lowerReplaceWhiteoutFile = URL(fileURLWithPath: lower).appendingPathComponent(replaceWhiteoutPath).path
         let lowerReplaceHiddenWhiteoutFile = URL(fileURLWithPath: lower).appendingPathComponent(replaceHiddenWhiteoutPath).path
         let lowerRollbackWhiteoutFile = URL(fileURLWithPath: lower).appendingPathComponent(rollbackWhiteoutPath).path
@@ -113,6 +115,8 @@ struct VolumeMetadataSmoke {
         let upperCOWRenameWhiteout = URL(fileURLWithPath: upper).appendingPathComponent("agent/workspace/.wh.cow-rename.txt").path
         let upperWriteFile = URL(fileURLWithPath: upper).appendingPathComponent(writePath).path
         let upperAbsentXattrFile = URL(fileURLWithPath: upper).appendingPathComponent(absentXattrPath).path
+        let upperOversizedXattrFile = URL(fileURLWithPath: upper).appendingPathComponent(oversizedXattrPath).path
+        let upperOversizedXattrDirectory = URL(fileURLWithPath: upper).appendingPathComponent("agent/xattr-rollback").path
         let upperReplaceWhiteoutFile = URL(fileURLWithPath: upper).appendingPathComponent(replaceWhiteoutPath).path
         let upperReplaceWhiteout = URL(fileURLWithPath: upper).appendingPathComponent("agent/workspace/.wh.replace-whiteout.txt").path
         let upperReplaceHiddenWhiteoutFile = URL(fileURLWithPath: upper).appendingPathComponent(replaceHiddenWhiteoutPath).path
@@ -152,6 +156,8 @@ struct VolumeMetadataSmoke {
         try Data("cow-rename".utf8).write(to: URL(fileURLWithPath: lowerCOWRenameFile))
         try Data("write".utf8).write(to: URL(fileURLWithPath: lowerWriteFile))
         try Data("absent xattr".utf8).write(to: URL(fileURLWithPath: lowerAbsentXattrFile))
+        try FileManager.default.createDirectory(atPath: URL(fileURLWithPath: lowerOversizedXattrFile).deletingLastPathComponent().path, withIntermediateDirectories: true)
+        try Data("oversized xattr".utf8).write(to: URL(fileURLWithPath: lowerOversizedXattrFile))
         try Data("hidden lower".utf8).write(to: URL(fileURLWithPath: lowerReplaceWhiteoutFile))
         try Data("hidden lower poisoned".utf8).write(to: URL(fileURLWithPath: lowerReplaceHiddenWhiteoutFile))
         try Data("rollback lower".utf8).write(to: URL(fileURLWithPath: lowerRollbackWhiteoutFile))
@@ -575,6 +581,16 @@ struct VolumeMetadataSmoke {
         }
         guard !itemExistsNoFollow(upperAbsentXattrFile) else {
             throw SmokeError("failed absent-xattr delete copied lower file into upper")
+        }
+        let oversizedXattrItem = OSIxItem(relativePath: oversizedXattrPath, physicalPath: lowerOversizedXattrFile, type: .file, source: .lower)
+        do {
+            try setXattr(volume: volume, name: FSFileName(string: String(repeating: "n", count: 128)), value: Data("bad".utf8), item: oversizedXattrItem, policy: .alwaysSet)
+            throw SmokeError("setXattr accepted oversized name")
+        } catch let error as NSError where error.domain == NSPOSIXErrorDomain {
+        }
+        guard !itemExistsNoFollow(upperOversizedXattrFile),
+              !FileManager.default.fileExists(atPath: upperOversizedXattrDirectory) else {
+            throw SmokeError("failed oversized xattr left upper copy or parent state")
         }
         let upperDanglingRemoveItem = OSIxItem(relativePath: upperDanglingRemovePath, physicalPath: upperDanglingRemove, type: .symlink, source: .upper)
         try removeItem(volume: volume, item: upperDanglingRemoveItem, name: FSFileName(string: "upper-dangling-remove"), directory: workspace)

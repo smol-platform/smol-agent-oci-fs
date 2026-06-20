@@ -101,8 +101,8 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
             do {
                 changed = try applyAttributes(newAttributes, to: try ensureUpperItem(for: current), itemType: current.type)
             } catch {
-                if !hadUpperItem, itemExists(at: upperItem) {
-                    try? fileManager.removeItem(atPath: upperItem)
+                if !hadUpperItem {
+                    removeCreatedUpperItemAndEmptyParents(current.relativePath)
                 }
                 throw error
             }
@@ -292,10 +292,15 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
             switch policy {
             case .delete:
                 try requireXattrExists(rawName, item: current, options: options)
+                let hadUpperItem = hasUpperItem(for: current.relativePath)
                 let path = try ensureUpperItem(for: current)
                 if removexattr(path, rawName, options) != 0 {
                     if errno != ENOATTR {
-                        throw posixError(errno)
+                        let error = posixError(errno)
+                        if !hadUpperItem {
+                            removeCreatedUpperItemAndEmptyParents(current.relativePath)
+                        }
+                        throw error
                     }
                 }
             case .alwaysSet, .mustCreate, .mustReplace:
@@ -310,6 +315,7 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
                 default:
                     flags = 0
                 }
+                let hadUpperItem = hasUpperItem(for: current.relativePath)
                 let path = try ensureUpperItem(for: current)
                 let data = value ?? Data()
                 let status = data.withUnsafeBytes { rawBuffer in
@@ -324,7 +330,11 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
                             break
                         }
                     }
-                    throw posixError(errno)
+                    let error = posixError(errno)
+                    if !hadUpperItem {
+                        removeCreatedUpperItemAndEmptyParents(current.relativePath)
+                    }
+                    throw error
                 }
             @unknown default:
                 throw posixError(EINVAL)
@@ -789,6 +799,32 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
             return target
         }
         throw posixError(ENOENT)
+    }
+
+    private func hasUpperItem(for relativePath: String) -> Bool {
+        guard let upper = mountOptions?.upper else {
+            return false
+        }
+        return itemExists(at: upperPath(upper, relativePath))
+    }
+
+    private func removeCreatedUpperItemAndEmptyParents(_ relativePath: String) {
+        guard let upper = mountOptions?.upper else {
+            return
+        }
+        let target = upperPath(upper, relativePath)
+        if itemExists(at: target) {
+            try? fileManager.removeItem(atPath: target)
+        }
+        var parent = parentPath(relativePath)
+        while !parent.isEmpty {
+            let parentTarget = upperPath(upper, parent)
+            guard let children = try? fileManager.contentsOfDirectory(atPath: parentTarget), children.isEmpty else {
+                break
+            }
+            try? fileManager.removeItem(atPath: parentTarget)
+            parent = parentPath(parent)
+        }
     }
 
     private func copyDirectoryMetadata(from source: String, to destination: String) throws {
