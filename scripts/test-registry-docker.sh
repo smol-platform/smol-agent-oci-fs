@@ -50,7 +50,8 @@ mkdir -p "${source_dir}" "${dest_dir}"
     --mount ./agentfs
   mkdir -p agentfs/agent/workspace
   printf 'registry round trip\n' > agentfs/agent/workspace/notes.md
-  "${tmp}/osix" snapshot agentfs --tag snap-000001 --also-tag main
+  "${tmp}/osix" snapshot agentfs --tag snap-000001 --also-tag main --sign keyless --attest docker-registry
+  "${tmp}/osix" verify main
   "${tmp}/osix" push main --tag release
 )
 
@@ -61,8 +62,9 @@ mkdir -p "${source_dir}" "${dest_dir}"
     --state "${registry}/acme/registry-agent" \
     --mount ./agentfs
   "${tmp}/osix" pull "${registry}/acme/registry-agent:release" --tag pulled-release
+  "${tmp}/osix" verify pulled-release
   "${tmp}/osix" restore pulled-release ./restored
   grep -qx 'registry round trip' restored/agent/workspace/notes.md
 )
 
-echo "Docker registry push/pull integration passed"
+echo "Docker registry signed push/pull integration passed"
