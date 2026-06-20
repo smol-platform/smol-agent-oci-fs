@@ -127,6 +127,88 @@ func TestDarwinFSKitMountPassesAbsoluteTargetToHelper(t *testing.T) {
 	}
 }
 
+func TestDarwinFSKitUnmountUsesStoredTarget(t *testing.T) {
+	root := t.TempDir()
+	argsFile := filepath.Join(root, "helper-unmount-args.txt")
+	helperFile := filepath.Join(root, "osix-fskitctl")
+	helperScript := "#!/bin/sh\n" +
+		"printf '%s\\n' \"$@\" > \"$OSIX_FSKIT_HELPER_ARGS\"\n" +
+		"exit 0\n"
+	if err := os.WriteFile(helperFile, []byte(helperScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OSIX_FSKIT_HELPER", helperFile)
+	t.Setenv("OSIX_FSKIT_HELPER_ARGS", argsFile)
+
+	if _, err := Init(root, InitOptions{
+		Base:          "example/base:latest",
+		Name:          "agent",
+		StateRef:      "local/agent",
+		Mount:         filepath.Join(root, "fs"),
+		DefaultBranch: "main",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s, err := findStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	storedTarget := filepath.Join(root, "stored-target")
+	info := MountInfo{
+		Target:       storedTarget,
+		SourceRef:    "snap-000001",
+		SourceDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Mode:         MountOverlay,
+		State:        "mounted",
+		CreatedAt:    time.Now().UTC(),
+		UpdatedAt:    time.Now().UTC(),
+	}
+	if err := s.writeMount(info); err != nil {
+		t.Fatal(err)
+	}
+
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := os.Chdir(oldWD); err != nil {
+			t.Fatalf("restore working directory: %v", err)
+		}
+	}()
+
+	if err := darwinFSKitUnmount(context.Background(), root, "relative-target", info, UnmountOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	argsData, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := strings.Split(strings.TrimSpace(string(argsData)), "\n")
+	found := false
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "--target" {
+			found = true
+			if args[i+1] != storedTarget {
+				t.Fatalf("helper unmount --target = %q, want %q; args=%#v", args[i+1], storedTarget, args)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("helper unmount args missing --target: %#v", args)
+	}
+	stored, err := s.findMount(storedTarget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.State != "unmounted" {
+		t.Fatalf("mount state = %q, want unmounted", stored.State)
+	}
+}
+
 func TestDarwinAutoFallsBackToMaterializedWhenFSKitUnavailable(t *testing.T) {
 	t.Setenv("OSIX_FSKIT_HELPER", filepath.Join(t.TempDir(), "missing-osix-fskitctl"))
 	root := t.TempDir()

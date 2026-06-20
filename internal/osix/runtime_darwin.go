@@ -179,7 +179,10 @@ func darwinFSKitMount(ctx context.Context, workspaceRoot, sourceRef, target stri
 }
 
 func darwinFSKitUnmount(ctx context.Context, workspaceRoot, target string, info MountInfo, opts UnmountOptions) error {
-	mountTarget := absPath(target)
+	mountTarget := info.Target
+	if strings.TrimSpace(mountTarget) == "" {
+		mountTarget = absPath(target)
+	}
 	helper, err := darwinFSKitHelper()
 	if err == nil {
 		args := []string{"unmount", "--target", mountTarget}
@@ -187,14 +190,14 @@ func darwinFSKitUnmount(ctx context.Context, workspaceRoot, target string, info 
 			args = append(args, "--force")
 		}
 		if out, runErr := exec.CommandContext(ctx, helper, args...).CombinedOutput(); runErr == nil {
-			return markUnmounted(workspaceRoot, target)
+			return markUnmounted(workspaceRoot, mountTarget)
 		} else {
 			err = fmt.Errorf("unmount macOS FSKit filesystem: %s: %w", strings.TrimSpace(string(out)), runErr)
 		}
 	}
 	if opts.Force {
 		_ = exec.CommandContext(ctx, "diskutil", "unmount", "force", mountTarget).Run()
-		return markUnmounted(workspaceRoot, target)
+		return markUnmounted(workspaceRoot, mountTarget)
 	}
 	return err
 }
