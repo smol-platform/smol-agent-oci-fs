@@ -2,14 +2,23 @@ import Foundation
 
 @main
 struct DirtyIndexSmoke {
-    static func main() throws {
+    static func main() {
+        do {
+            try run()
+        } catch {
+            fputs("DirtyIndexSmoke: \(error)\n", stderr)
+            Foundation.exit(1)
+        }
+    }
+
+    static func run() throws {
         guard CommandLine.arguments.count == 2 || CommandLine.arguments.count == 4 else {
             fputs("usage: DirtyIndexSmoke UPPER_DIR [WORKSPACE_ROOT SOURCE_DIGEST]\n", stderr)
             Foundation.exit(64)
         }
         let parentTree: [String: OSIxTreeEntry]
         if CommandLine.arguments.count == 4 {
-            parentTree = OSIxDirtyIndex.parentTree(workspace: CommandLine.arguments[2], sourceDigest: CommandLine.arguments[3])
+            parentTree = try OSIxDirtyIndex.parentTree(workspace: CommandLine.arguments[2], sourceDigest: CommandLine.arguments[3])
         } else {
             parentTree = [:]
         }

@@ -86,7 +86,9 @@ from `lower` and `upper`, using OSIx whiteout-compatible delete semantics, and
 flushing mutations before unmount or snapshot. When `osix.workspace` and
 `osix.source_digest` are available, the extension loads the parent snapshot tree
 and omits copied-up upper entries that exactly match the parent from
-`dirty.json`.
+`dirty.json`. Parent metadata is authoritative for mounted OSIx runtimes: if the
+referenced parent manifest or config cannot be loaded, dirty-index rebuild fails
+instead of silently producing a degraded dirty set.
 
 Names beginning with `.wh.` are reserved by the local upperdir whiteout
 encoding. The FSKit module rejects those names for lookup and mutation rather

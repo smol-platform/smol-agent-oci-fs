@@ -95,19 +95,25 @@ struct OSIxDirtyIndex {
         return OSIxDirtyIndex(dirtyBytes: dirtyBytes, paths: paths, updatedAt: Date())
     }
 
-    static func parentTree(workspace: String?, sourceDigest: String?) -> [String: OSIxTreeEntry] {
+    static func parentTree(workspace: String?, sourceDigest: String?) throws -> [String: OSIxTreeEntry] {
+        if workspace == nil && sourceDigest == nil {
+            return [:]
+        }
         guard let workspace, let sourceDigest else {
-            return [:]
+            throw OSIxDirtyIndexError(description: "osix.workspace and osix.source_digest must be provided together")
         }
-        do {
-            let manifestData = try Data(contentsOf: blobURL(workspace: workspace, digest: sourceDigest))
-            let manifest = try JSONDecoder().decode(OSIxManifest.self, from: manifestData)
-            let configData = try Data(contentsOf: blobURL(workspace: workspace, digest: manifest.config.digest))
-            let config = try JSONDecoder().decode(OSIxAgentConfig.self, from: configData)
-            return Dictionary(uniqueKeysWithValues: config.tree.map { ($0.path, $0) })
-        } catch {
-            return [:]
+        let manifestData = try Data(contentsOf: blobURL(workspace: workspace, digest: sourceDigest))
+        let manifest = try JSONDecoder().decode(OSIxManifest.self, from: manifestData)
+        let configData = try Data(contentsOf: blobURL(workspace: workspace, digest: manifest.config.digest))
+        let config = try JSONDecoder().decode(OSIxAgentConfig.self, from: configData)
+        var entries: [String: OSIxTreeEntry] = [:]
+        for entry in config.tree {
+            if entries[entry.path] != nil {
+                throw OSIxDirtyIndexError(description: "duplicate parent tree entry \(entry.path)")
+            }
+            entries[entry.path] = entry
         }
+        return entries
     }
 
     private static func treeEntry(path: String, relativePath: String) throws -> OSIxTreeEntry? {
@@ -164,6 +170,10 @@ struct OSIxTreeEntry: Decodable, Equatable {
     let size: Int64?
     let digest: String?
     let linkname: String?
+}
+
+struct OSIxDirtyIndexError: Error, CustomStringConvertible {
+    let description: String
 }
 
 private struct OSIxManifest: Decodable {

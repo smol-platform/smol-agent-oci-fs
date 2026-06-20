@@ -48,6 +48,11 @@ JSON
 
 "${tmp}/DirtyIndexSmoke" "${tmp}/upper" "${workspace}" "sha256:${manifest_digest}" > "${tmp}/dirty.json"
 
+if "${tmp}/DirtyIndexSmoke" "${tmp}/upper" "${workspace}" "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" > "${tmp}/missing-parent.json" 2> "${tmp}/missing-parent.err"; then
+  echo "DirtyIndexSmoke accepted missing parent snapshot metadata" >&2
+  exit 1
+fi
+
 python3 - "$tmp/dirty.json" <<'PY'
 import json
 import sys

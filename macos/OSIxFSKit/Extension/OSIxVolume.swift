@@ -1029,7 +1029,7 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
             .deletingLastPathComponent()
             .appendingPathComponent("dirty.json")
             .path
-        let parentTree = OSIxDirtyIndex.parentTree(workspace: mountOptions?.workspace, sourceDigest: mountOptions?.sourceDigest)
+        let parentTree = try OSIxDirtyIndex.parentTree(workspace: mountOptions?.workspace, sourceDigest: mountOptions?.sourceDigest)
         try OSIxDirtyIndex.rebuild(upper: upper, parentTree: parentTree).write(to: dirtyPath)
     }
 
