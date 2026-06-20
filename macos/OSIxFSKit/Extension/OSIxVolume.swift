@@ -5,7 +5,7 @@ import FSKit
 private let opaqueWhiteoutName = ".wh..wh..opq"
 
 @objc
-final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperations, FSVolume.XattrOperations, FSVolume.OpenCloseOperations, FSVolume.PreallocateOperations {
+final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperations, FSVolume.XattrOperations, FSVolume.OpenCloseOperations, FSVolume.PreallocateOperations, FSVolume.AccessCheckOperations {
     private let fileManager = FileManager.default
     private var mountOptions: OSIxMountOptions?
     private var root = OSIxItem.root
@@ -339,6 +339,23 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
 
     func preallocateSpace(for item: FSItem, at offset: off_t, length: Int, flags: FSVolume.PreallocateFlags, replyHandler reply: @escaping (Int, (any Error)?) -> Void) {
         reply(0, posixError(ENOTSUP))
+    }
+
+    func checkAccess(to item: FSItem, requestedAccess access: FSVolume.AccessMask, replyHandler reply: @escaping (Bool, (any Error)?) -> Void) {
+        guard let item = item as? OSIxItem else {
+            reply(false, posixError(EINVAL))
+            return
+        }
+        do {
+            let current = try currentItem(for: item)
+            var statBuffer = stat()
+            guard lstat(current.physicalPath, &statBuffer) == 0 else {
+                throw posixError(errno)
+            }
+            reply(isAccessAllowed(access, for: statBuffer, itemType: current.type), nil)
+        } catch {
+            reply(false, error)
+        }
     }
 
     func getXattr(named name: FSFileName, of item: FSItem, replyHandler reply: @escaping (Data?, (any Error)?) -> Void) {
@@ -923,6 +940,65 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
             return true
         }
         return newAttributes.isValid(.accessTime) || newAttributes.isValid(.modifyTime)
+    }
+
+    private func isAccessAllowed(_ access: FSVolume.AccessMask, for statBuffer: stat, itemType: FSItem.ItemType) -> Bool {
+        let raw = access.rawValue
+        if raw == 0 {
+            return true
+        }
+        if needsReadAccess(raw), !hasPOSIXPermission(S_IRUSR, S_IRGRP, S_IROTH, statBuffer: statBuffer, itemType: itemType) {
+            return false
+        }
+        if needsWriteAccess(raw), !hasPOSIXPermission(S_IWUSR, S_IWGRP, S_IWOTH, statBuffer: statBuffer, itemType: itemType) {
+            return false
+        }
+        if needsExecuteAccess(raw), !hasPOSIXPermission(S_IXUSR, S_IXGRP, S_IXOTH, statBuffer: statBuffer, itemType: itemType) {
+            return false
+        }
+        return true
+    }
+
+    private func needsReadAccess(_ access: UInt) -> Bool {
+        access & ((1 << 1) | (1 << 7) | (1 << 9) | (1 << 11)) != 0
+    }
+
+    private func needsWriteAccess(_ access: UInt) -> Bool {
+        access & ((1 << 2) | (1 << 4) | (1 << 5) | (1 << 6) | (1 << 8) | (1 << 10) | (1 << 12) | (1 << 13)) != 0
+    }
+
+    private func needsExecuteAccess(_ access: UInt) -> Bool {
+        access & (1 << 3) != 0
+    }
+
+    private func hasPOSIXPermission(_ ownerBit: mode_t, _ groupBit: mode_t, _ otherBit: mode_t, statBuffer: stat, itemType: FSItem.ItemType) -> Bool {
+        let effectiveUID = geteuid()
+        if effectiveUID == 0 {
+            if ownerBit == S_IXUSR {
+                return itemType == .directory || statBuffer.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH) != 0
+            }
+            return true
+        }
+        let mode = statBuffer.st_mode
+        if effectiveUID == statBuffer.st_uid {
+            return mode & ownerBit != 0
+        }
+        if processIsInGroup(statBuffer.st_gid) {
+            return mode & groupBit != 0
+        }
+        return mode & otherBit != 0
+    }
+
+    private func processIsInGroup(_ gid: gid_t) -> Bool {
+        if getegid() == gid {
+            return true
+        }
+        let groupCount = getgroups(0, nil)
+        guard groupCount > 0 else {
+            return false
+        }
+        var groups = [gid_t](repeating: 0, count: Int(groupCount))
+        return getgroups(groupCount, &groups) >= 0 && groups.contains(gid)
     }
 
     private func resolveItem(_ relativePath: String) -> OSIxItem? {

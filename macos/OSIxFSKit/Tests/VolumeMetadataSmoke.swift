@@ -58,6 +58,8 @@ struct VolumeMetadataSmoke {
         let unsupportedCreateDirectoryPath = "agent/unsupported-create-dir"
         let unsupportedHardLinkPath = "agent/unsupported-create-dir/hard-link"
         let unsupportedPreallocatePath = "agent/unsupported-preallocate/file.txt"
+        let accessReadOnlyPath = "agent/access/readonly.txt"
+        let accessSearchDirectoryPath = "agent/access/search-dir"
         let emptySymlinkDirectoryPath = "agent/empty-symlink-dir"
         let staleTypeDirectoryPath = "agent/stale-type-dir"
         let removedDirectoryPath = "agent/removed"
@@ -110,6 +112,8 @@ struct VolumeMetadataSmoke {
         let lowerIgnoredChild = URL(fileURLWithPath: lower).appendingPathComponent(ignoredDirectoryPath + "/child.txt").path
         let lowerUnsupportedCreateDirectory = URL(fileURLWithPath: lower).appendingPathComponent(unsupportedCreateDirectoryPath).path
         let lowerUnsupportedPreallocateFile = URL(fileURLWithPath: lower).appendingPathComponent(unsupportedPreallocatePath).path
+        let lowerAccessReadOnlyFile = URL(fileURLWithPath: lower).appendingPathComponent(accessReadOnlyPath).path
+        let lowerAccessSearchDirectory = URL(fileURLWithPath: lower).appendingPathComponent(accessSearchDirectoryPath).path
         let lowerEmptySymlinkDirectory = URL(fileURLWithPath: lower).appendingPathComponent(emptySymlinkDirectoryPath).path
         let lowerStaleTypeDirectory = URL(fileURLWithPath: lower).appendingPathComponent(staleTypeDirectoryPath).path
         let lowerRemovedDirectory = URL(fileURLWithPath: lower).appendingPathComponent(removedDirectoryPath).path
@@ -273,6 +277,15 @@ struct VolumeMetadataSmoke {
         try FileManager.default.createDirectory(atPath: lowerUnsupportedCreateDirectory, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(atPath: URL(fileURLWithPath: lowerUnsupportedPreallocateFile).deletingLastPathComponent().path, withIntermediateDirectories: true)
         try Data("preallocate".utf8).write(to: URL(fileURLWithPath: lowerUnsupportedPreallocateFile))
+        try FileManager.default.createDirectory(atPath: URL(fileURLWithPath: lowerAccessReadOnlyFile).deletingLastPathComponent().path, withIntermediateDirectories: true)
+        try Data("readonly".utf8).write(to: URL(fileURLWithPath: lowerAccessReadOnlyFile))
+        guard chmod(lowerAccessReadOnlyFile, 0o400) == 0 else {
+            throw SmokeError("failed to prepare read-only access fixture")
+        }
+        try FileManager.default.createDirectory(atPath: lowerAccessSearchDirectory, withIntermediateDirectories: true)
+        guard chmod(lowerAccessSearchDirectory, 0o500) == 0 else {
+            throw SmokeError("failed to prepare search-only access fixture")
+        }
         try FileManager.default.createDirectory(atPath: lowerEmptySymlinkDirectory, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(atPath: lowerStaleTypeDirectory, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(atPath: URL(fileURLWithPath: lowerRemovedFile).deletingLastPathComponent().path, withIntermediateDirectories: true)
@@ -359,6 +372,25 @@ struct VolumeMetadataSmoke {
             )
             throw SmokeError("openItem accepted a missing file")
         } catch let error as NSError where error.domain == NSPOSIXErrorDomain && error.code == Int(ENOENT) {
+        }
+        if getuid() != 0 {
+            let readOnlyItem = OSIxItem(relativePath: accessReadOnlyPath, physicalPath: lowerAccessReadOnlyFile, type: .file, source: .lower)
+            guard try checkAccess(volume: volume, item: readOnlyItem, access: accessMask(1 << 1)) else {
+                throw SmokeError("access check denied owner read on read-only file")
+            }
+            guard !(try checkAccess(volume: volume, item: readOnlyItem, access: accessMask(1 << 2))) else {
+                throw SmokeError("access check allowed owner write on read-only file")
+            }
+            guard !(try checkAccess(volume: volume, item: readOnlyItem, access: accessMask(1 << 3))) else {
+                throw SmokeError("access check allowed execute on non-executable file")
+            }
+            let searchDirectoryItem = OSIxItem(relativePath: accessSearchDirectoryPath, physicalPath: lowerAccessSearchDirectory, type: .directory, source: .lower)
+            guard try checkAccess(volume: volume, item: searchDirectoryItem, access: accessMask(1 << 3)) else {
+                throw SmokeError("access check denied directory search on executable directory")
+            }
+            guard !(try checkAccess(volume: volume, item: searchDirectoryItem, access: accessMask(1 << 2))) else {
+                throw SmokeError("access check allowed directory write without write bit")
+            }
         }
         let request = FSItem.SetAttributesRequest()
         request.size = 2
@@ -1369,6 +1401,23 @@ struct VolumeMetadataSmoke {
         if let replyError {
             throw replyError
         }
+    }
+
+    static func checkAccess(volume: OSIxVolume, item: FSItem, access: FSVolume.AccessMask) throws -> Bool {
+        var replyAllowed = false
+        var replyError: (any Error)?
+        volume.checkAccess(to: item, requestedAccess: access) { allowed, error in
+            replyAllowed = allowed
+            replyError = error
+        }
+        if let replyError {
+            throw replyError
+        }
+        return replyAllowed
+    }
+
+    static func accessMask(_ rawValue: UInt) -> FSVolume.AccessMask {
+        FSVolume.AccessMask(rawValue: rawValue)
     }
 
     static func preallocateSpace(volume: OSIxVolume, item: FSItem, length: Int) throws {
