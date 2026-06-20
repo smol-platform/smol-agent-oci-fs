@@ -87,7 +87,7 @@ func watchStatePath(s store, target string) (string, error) {
 		return "", err
 	}
 	dir := filepath.Join(s.root, "watch")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
 	return filepath.Join(dir, key+".json"), nil
@@ -98,7 +98,7 @@ func writeWatchState(path string, state WatchState) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o644)
+	return writePrivateFile(path, data)
 }
 
 func waitTurnBoundary(target string, timeout time.Duration) error {

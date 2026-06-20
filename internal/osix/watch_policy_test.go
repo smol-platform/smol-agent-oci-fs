@@ -24,6 +24,20 @@ func TestWatchCreatesSnapshotAndState(t *testing.T) {
 	if _, err := os.Stat(result.StatePath); err != nil {
 		t.Fatal(err)
 	}
+	stateInfo, err := os.Stat(result.StatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stateInfo.Mode().Perm() != 0o600 {
+		t.Fatalf("watch state mode = %o, want 0600", stateInfo.Mode().Perm())
+	}
+	watchDirInfo, err := os.Stat(filepath.Dir(result.StatePath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if watchDirInfo.Mode().Perm() != 0o700 {
+		t.Fatalf("watch state dir mode = %o, want 0700", watchDirInfo.Mode().Perm())
+	}
 }
 
 func TestWatchTurnBoundaryHook(t *testing.T) {
