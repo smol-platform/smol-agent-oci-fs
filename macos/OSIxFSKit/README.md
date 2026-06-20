@@ -88,6 +88,11 @@ flushing mutations before unmount or snapshot. When `osix.workspace` and
 and omits copied-up upper entries that exactly match the parent from
 `dirty.json`.
 
+Names beginning with `.wh.` are reserved by the local upperdir whiteout
+encoding. The FSKit module rejects those names for lookup and mutation rather
+than exposing them as user files; future OCI-compatible escaping can loosen this
+without allowing user-visible files to collide with internal delete markers.
+
 ## Remaining Native Extension Work
 
 The extension builds and carries the `com.apple.developer.fskit.fsmodule`

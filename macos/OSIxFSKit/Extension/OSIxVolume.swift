@@ -929,7 +929,8 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
               string != ".",
               string != "..",
               !string.contains("/"),
-              !string.contains("\0") else {
+              !string.contains("\0"),
+              !string.hasPrefix(".wh.") else {
             return nil
         }
         return string

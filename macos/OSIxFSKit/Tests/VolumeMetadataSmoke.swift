@@ -99,6 +99,7 @@ struct VolumeMetadataSmoke {
         let upperNameBoundaryRemoveWhiteout = URL(fileURLWithPath: upper).appendingPathComponent("agent/workspace/.wh.name-boundary-remove.txt").path
         let upperNameBoundaryRenameDestination = URL(fileURLWithPath: upper).appendingPathComponent(nameBoundaryRenameDestinationPath).path
         let upperNameBoundaryRenameWhiteout = URL(fileURLWithPath: upper).appendingPathComponent("agent/workspace/.wh.name-boundary-rename.txt").path
+        let upperReservedWhiteoutName = URL(fileURLWithPath: upper).appendingPathComponent("agent/workspace/.wh.user-visible.txt").path
         let upperRenameOverLowerFileDestination = URL(fileURLWithPath: upper).appendingPathComponent(renameOverLowerFileDestinationPath).path
         let upperRenameOverLowerFileWhiteout = URL(fileURLWithPath: upper).appendingPathComponent("agent/workspace/.wh.rename-over-lower-file-source.txt").path
         let upperRenameOverLowerFileDestinationWhiteout = URL(fileURLWithPath: upper).appendingPathComponent("agent/workspace/.wh.rename-over-lower-file-dest.txt").path
@@ -446,6 +447,19 @@ struct VolumeMetadataSmoke {
             _ = try lookupItem(volume: volume, name: FSFileName(string: "file.txt/.."), directory: workspace)
             throw SmokeError("lookupItem accepted slash-containing name")
         } catch let error as NSError where error.domain == NSPOSIXErrorDomain && error.code == Int(EINVAL) {
+        }
+        do {
+            _ = try lookupItem(volume: volume, name: FSFileName(string: ".wh.user-visible.txt"), directory: workspace)
+            throw SmokeError("lookupItem accepted reserved whiteout name")
+        } catch let error as NSError where error.domain == NSPOSIXErrorDomain && error.code == Int(EINVAL) {
+        }
+        do {
+            try createItem(volume: volume, name: FSFileName(string: ".wh.user-visible.txt"), type: .file, directory: workspace, attributes: FSItem.SetAttributesRequest())
+            throw SmokeError("createItem accepted reserved whiteout name")
+        } catch let error as NSError where error.domain == NSPOSIXErrorDomain && error.code == Int(EINVAL) {
+        }
+        guard !FileManager.default.fileExists(atPath: upperReservedWhiteoutName) else {
+            throw SmokeError("reserved whiteout-name create wrote internal upper state")
         }
         let mismatchedRemoveHandle = OSIxItem(relativePath: staleDeletePath, physicalPath: lowerDeleteFile, type: .file, source: .lower)
         try removeItem(volume: volume, item: mismatchedRemoveHandle, name: FSFileName(string: "name-boundary-remove.txt"), directory: workspace)
