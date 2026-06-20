@@ -79,6 +79,10 @@ System Settings > General > Login Items & Extensions > File System Extensions.
 Use `--open-settings` to force opening that settings pane after a failed doctor
 check, or `--no-open-settings` to suppress it in scripted setup.
 
+The public FSKit `FSClient` API exposes installed module identities and their
+enabled state, but it does not expose an API to enable a file system extension.
+The System Settings File System Extensions pane owns that user approval step.
+
 Distribution requires a Developer ID or App Store signing identity and an
 approved FSKit entitlement profile. The same `OSIX_FSKIT_CODESIGN_IDENTITY`
 setting is honored by `install-macos-fskit-app.sh` because it delegates to the

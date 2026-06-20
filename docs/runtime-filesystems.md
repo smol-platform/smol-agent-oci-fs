@@ -122,6 +122,12 @@ pane automatically on a failed doctor check; pass `--no-open-settings` to keep
 the install fully noninteractive or `--open-settings` to force the settings pane
 after a failed readiness check.
 
+PlugInKit registration and election only make the embedded extension
+discoverable to the system. They are not the same as FSKit runtime enablement.
+The public FSKit `FSClient` API only exposes installed module identities and
+their enabled state; it does not provide a public API for enabling a file system
+extension. Enablement is handled by System Settings.
+
 The integration harness uses `--no-open --background-register` to launch the
 host app hidden long enough for ExtensionKit/PlugInKit discovery without
 foregrounding the app. It also passes `--wait-ready`, controlled by

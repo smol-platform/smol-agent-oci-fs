@@ -230,7 +230,7 @@ struct OSIxFSKitControl {
         guard let module = modules.first(where: { $0.bundleIdentifier == bundleID }) else {
             if let plugInKitState = try? plugInKitRegistrationState(bundleID: bundleID) {
                 throw CLIError(
-                    message: "FSKit extension \(bundleID) is \(plugInKitState) but FSClient does not report it as enabled; enable it in System Settings > General > Login Items & Extensions > File System Extensions",
+                    message: "FSKit extension \(bundleID) is \(plugInKitState) but FSClient does not report it as enabled. PlugInKit registration is not FSKit runtime enablement; the public FSClient API only reports modules after FSKit enablement. Enable it in System Settings > General > Login Items & Extensions > File System Extensions.",
                     code: 69
                 )
             }
@@ -239,7 +239,7 @@ struct OSIxFSKitControl {
         guard module.isEnabled else {
             let plugInKitState = (try? plugInKitRegistrationState(bundleID: bundleID)) ?? "installed"
             throw CLIError(
-                message: "FSKit extension \(bundleID) is \(plugInKitState) but not enabled for FSKit; enable it in System Settings > General > Login Items & Extensions > File System Extensions",
+                message: "FSKit extension \(bundleID) is \(plugInKitState) but not enabled for FSKit. PlugInKit registration is not FSKit runtime enablement; enable it in System Settings > General > Login Items & Extensions > File System Extensions.",
                 code: 69
             )
         }
