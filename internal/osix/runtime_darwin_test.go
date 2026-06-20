@@ -318,6 +318,7 @@ func testDarwinFSKitRuntimeIntegration(t *testing.T, mode MountMode) {
 	fs := filepath.Join(root, "fs")
 	mustWrite(t, filepath.Join(fs, "agent", "workspace", "file.txt"), "v1\n")
 	mustWrite(t, filepath.Join(fs, "agent", "workspace", "remove.txt"), "remove\n")
+	mustWrite(t, filepath.Join(fs, "agent", "workspace", "rename.txt"), "rename\n")
 	if _, err := Snapshot(root, fs, SnapshotOptions{Tag: "snap-000001"}); err != nil {
 		t.Fatal(err)
 	}
@@ -339,6 +340,9 @@ func testDarwinFSKitRuntimeIntegration(t *testing.T, mode MountMode) {
 	if err := os.Remove(filepath.Join(target, "agent", "workspace", "remove.txt")); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Rename(filepath.Join(target, "agent", "workspace", "rename.txt"), filepath.Join(target, "agent", "workspace", "renamed.txt")); err != nil {
+		t.Fatal(err)
+	}
 	changes, err := rt.Diff(ctx, target)
 	if err != nil {
 		t.Fatal(err)
@@ -347,6 +351,8 @@ func testDarwinFSKitRuntimeIntegration(t *testing.T, mode MountMode) {
 		"M /agent/workspace/file.txt",
 		"A /agent/workspace/new.txt",
 		"D /agent/workspace/remove.txt",
+		"D /agent/workspace/rename.txt",
+		"A /agent/workspace/renamed.txt",
 	}
 	if got := changeStrings(changes); !reflect.DeepEqual(got, wantChanges) {
 		t.Fatalf("changes mismatch\nwant: %#v\n got: %#v", wantChanges, got)
@@ -371,6 +377,8 @@ func testDarwinFSKitRuntimeIntegration(t *testing.T, mode MountMode) {
 	assertFile(t, filepath.Join(watchRestore, "agent", "workspace", "file.txt"), "v2\n")
 	assertFile(t, filepath.Join(watchRestore, "agent", "workspace", "new.txt"), "new\n")
 	assertMissing(t, filepath.Join(watchRestore, "agent", "workspace", "remove.txt"))
+	assertMissing(t, filepath.Join(watchRestore, "agent", "workspace", "rename.txt"))
+	assertFile(t, filepath.Join(watchRestore, "agent", "workspace", "renamed.txt"), "rename\n")
 
 	snap, err := rt.Snapshot(ctx, target, SnapshotOptions{Tag: "snap-000002"})
 	if err != nil {
@@ -383,6 +391,18 @@ func testDarwinFSKitRuntimeIntegration(t *testing.T, mode MountMode) {
 	assertFile(t, filepath.Join(restore, "agent", "workspace", "file.txt"), "v2\n")
 	assertFile(t, filepath.Join(restore, "agent", "workspace", "new.txt"), "new\n")
 	assertMissing(t, filepath.Join(restore, "agent", "workspace", "remove.txt"))
+	assertMissing(t, filepath.Join(restore, "agent", "workspace", "rename.txt"))
+	assertFile(t, filepath.Join(restore, "agent", "workspace", "renamed.txt"), "rename\n")
+	if err := rt.Unmount(ctx, target, UnmountOptions{Force: true}); err != nil {
+		t.Fatal(err)
+	}
+	status, err := rt.Status(ctx, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.State != "unmounted" {
+		t.Fatalf("state after unmount = %q, want unmounted", status.State)
+	}
 }
 
 func waitForDarwinPath(t *testing.T, path string) {
