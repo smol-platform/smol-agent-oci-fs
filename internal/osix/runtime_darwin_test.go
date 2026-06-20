@@ -4,10 +4,12 @@ package osix
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -317,6 +319,65 @@ func TestDarwinFSKitIntegration(t *testing.T) {
 		t.Run(string(mode), func(t *testing.T) {
 			testDarwinFSKitRuntimeIntegration(t, mode)
 		})
+		t.Run(string(mode)+"-read-only", func(t *testing.T) {
+			testDarwinFSKitReadOnlyIntegration(t, mode)
+		})
+	}
+}
+
+func testDarwinFSKitReadOnlyIntegration(t *testing.T, mode MountMode) {
+	t.Helper()
+	root := t.TempDir()
+	if _, err := Init(root, InitOptions{
+		Base:          "example/base:latest",
+		Name:          "agent",
+		StateRef:      "local/agent",
+		Mount:         filepath.Join(root, "fs"),
+		DefaultBranch: "main",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fs := filepath.Join(root, "fs")
+	mustWrite(t, filepath.Join(fs, "agent", "workspace", "file.txt"), "v1\n")
+	if _, err := Snapshot(root, fs, SnapshotOptions{Tag: "snap-000001"}); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	target := filepath.Join(root, "read-only-"+string(mode))
+	rt := NewMountRuntime(root, mode)
+	info, err := rt.Mount(ctx, "snap-000001", target, MountOptions{Force: true, ReadOnly: true, Mode: mode})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = rt.Unmount(ctx, target, UnmountOptions{Force: true})
+	}()
+	if info.RW {
+		t.Fatalf("read-only mount metadata RW = true")
+	}
+	file := filepath.Join(target, "agent", "workspace", "file.txt")
+	waitForDarwinPath(t, file)
+	assertFile(t, file, "v1\n")
+	assertReadOnlyFilesystemError(t, os.WriteFile(file, []byte("v2\n"), 0o644), "modify read-only FSKit file")
+	assertReadOnlyFilesystemError(t, os.WriteFile(filepath.Join(target, "agent", "workspace", "new.txt"), []byte("new\n"), 0o644), "create read-only FSKit file")
+	assertReadOnlyFilesystemError(t, os.Remove(file), "remove read-only FSKit file")
+	changes, err := rt.Diff(ctx, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := changeStrings(changes); len(got) != 0 {
+		t.Fatalf("read-only mount produced changes: %#v", got)
+	}
+}
+
+func assertReadOnlyFilesystemError(t *testing.T, err error, operation string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("%s unexpectedly succeeded", operation)
+	}
+	if !errors.Is(err, syscall.EROFS) {
+		t.Fatalf("%s error = %v, want EROFS", operation, err)
 	}
 }
 
