@@ -747,6 +747,9 @@ func extractLayer(data []byte, target string) error {
 			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 				return err
 			}
+			if err := os.RemoveAll(path); err != nil {
+				return err
+			}
 			if err := os.Symlink(hdr.Linkname, path); err != nil {
 				return err
 			}

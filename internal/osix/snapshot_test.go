@@ -222,6 +222,9 @@ func TestSnapshotRestoreTypeChanges(t *testing.T) {
 	if err := os.Symlink("old-target", filepath.Join(fs, "agent", "workspace", "replace-link")); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Symlink("old-same-type-target", filepath.Join(fs, "agent", "workspace", "retarget-link")); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := Snapshot(root, fs, SnapshotOptions{Tag: "snap-000001", AlsoTag: "main"}); err != nil {
 		t.Fatal(err)
 	}
@@ -235,9 +238,15 @@ func TestSnapshotRestoreTypeChanges(t *testing.T) {
 	if err := os.Remove(filepath.Join(fs, "agent", "workspace", "replace-link")); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Remove(filepath.Join(fs, "agent", "workspace", "retarget-link")); err != nil {
+		t.Fatal(err)
+	}
 	mustWrite(t, filepath.Join(fs, "agent", "workspace", "replace-dir"), "new file\n")
 	mustWrite(t, filepath.Join(fs, "agent", "workspace", "replace-file", "child.txt"), "new child\n")
 	mustWrite(t, filepath.Join(fs, "agent", "workspace", "replace-link"), "new link file\n")
+	if err := os.Symlink("new-same-type-target", filepath.Join(fs, "agent", "workspace", "retarget-link")); err != nil {
+		t.Fatal(err)
+	}
 	second, err := Snapshot(root, fs, SnapshotOptions{Tag: "snap-000002", AlsoTag: "main"})
 	if err != nil {
 		t.Fatal(err)
@@ -250,6 +259,7 @@ func TestSnapshotRestoreTypeChanges(t *testing.T) {
 		"agent/workspace/replace-file",
 		"agent/workspace/replace-file/child.txt",
 		"agent/workspace/replace-link",
+		"agent/workspace/retarget-link",
 	})
 
 	restore := filepath.Join(root, "restore-type-change")
@@ -259,6 +269,13 @@ func TestSnapshotRestoreTypeChanges(t *testing.T) {
 	assertFile(t, filepath.Join(restore, "agent", "workspace", "replace-dir"), "new file\n")
 	assertFile(t, filepath.Join(restore, "agent", "workspace", "replace-file", "child.txt"), "new child\n")
 	assertFile(t, filepath.Join(restore, "agent", "workspace", "replace-link"), "new link file\n")
+	linkTarget, err := os.Readlink(filepath.Join(restore, "agent", "workspace", "retarget-link"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if linkTarget != "new-same-type-target" {
+		t.Fatalf("retarget-link target = %q", linkTarget)
+	}
 }
 
 func TestAgeEncryptedSnapshotRestore(t *testing.T) {
