@@ -26,6 +26,8 @@ struct VolumeMetadataSmoke {
         let cowDeletePath = "agent/workspace/cow-delete.txt"
         let cowRenamePath = "agent/workspace/cow-rename.txt"
         let cowRenameDestinationPath = "agent/workspace/cow-renamed.txt"
+        let renameHiddenRollbackSourcePath = "agent/workspace/rename-hidden-rollback-source.txt"
+        let renameHiddenRollbackDestinationPath = "agent/workspace/rename-hidden-rollback-dest.txt"
         let writePath = "agent/workspace/write-me.txt"
         let absentXattrPath = "agent/workspace/absent-xattr.txt"
         let copyFailurePath = "agent/copy-failure/unreadable.txt"
@@ -68,6 +70,7 @@ struct VolumeMetadataSmoke {
         let lowerFailedAttributesFile = URL(fileURLWithPath: lower).appendingPathComponent(failedAttributesPath).path
         let lowerCOWDeleteFile = URL(fileURLWithPath: lower).appendingPathComponent(cowDeletePath).path
         let lowerCOWRenameFile = URL(fileURLWithPath: lower).appendingPathComponent(cowRenamePath).path
+        let lowerRenameHiddenRollbackSource = URL(fileURLWithPath: lower).appendingPathComponent(renameHiddenRollbackSourcePath).path
         let lowerWriteFile = URL(fileURLWithPath: lower).appendingPathComponent(writePath).path
         let lowerAbsentXattrFile = URL(fileURLWithPath: lower).appendingPathComponent(absentXattrPath).path
         let lowerCopyFailureFile = URL(fileURLWithPath: lower).appendingPathComponent(copyFailurePath).path
@@ -124,6 +127,10 @@ struct VolumeMetadataSmoke {
         let upperCOWDeleteWhiteout = URL(fileURLWithPath: upper).appendingPathComponent("agent/workspace/.wh.cow-delete.txt").path
         let upperCOWRenameDestination = URL(fileURLWithPath: upper).appendingPathComponent(cowRenameDestinationPath).path
         let upperCOWRenameWhiteout = URL(fileURLWithPath: upper).appendingPathComponent("agent/workspace/.wh.cow-rename.txt").path
+        let upperRenameHiddenRollbackSource = URL(fileURLWithPath: upper).appendingPathComponent(renameHiddenRollbackSourcePath).path
+        let upperRenameHiddenRollbackSourceWhiteout = URL(fileURLWithPath: upper).appendingPathComponent("agent/workspace/.wh.rename-hidden-rollback-source.txt").path
+        let upperRenameHiddenRollbackDestination = URL(fileURLWithPath: upper).appendingPathComponent(renameHiddenRollbackDestinationPath).path
+        let upperRenameHiddenRollbackDestinationWhiteout = URL(fileURLWithPath: upper).appendingPathComponent("agent/workspace/.wh.rename-hidden-rollback-dest.txt").path
         let upperWriteFile = URL(fileURLWithPath: upper).appendingPathComponent(writePath).path
         let upperAbsentXattrFile = URL(fileURLWithPath: upper).appendingPathComponent(absentXattrPath).path
         let upperCopyFailureFile = URL(fileURLWithPath: upper).appendingPathComponent(copyFailurePath).path
@@ -173,6 +180,7 @@ struct VolumeMetadataSmoke {
         try Data("failed attrs".utf8).write(to: URL(fileURLWithPath: lowerFailedAttributesFile))
         try Data("cow-delete".utf8).write(to: URL(fileURLWithPath: lowerCOWDeleteFile))
         try Data("cow-rename".utf8).write(to: URL(fileURLWithPath: lowerCOWRenameFile))
+        try Data("hidden rollback source".utf8).write(to: URL(fileURLWithPath: lowerRenameHiddenRollbackSource))
         try Data("write".utf8).write(to: URL(fileURLWithPath: lowerWriteFile))
         try Data("absent xattr".utf8).write(to: URL(fileURLWithPath: lowerAbsentXattrFile))
         try FileManager.default.createDirectory(atPath: URL(fileURLWithPath: lowerCopyFailureFile).deletingLastPathComponent().path, withIntermediateDirectories: true)
@@ -227,6 +235,8 @@ struct VolumeMetadataSmoke {
         FileManager.default.createFile(atPath: upperRollbackWhiteout, contents: Data())
         FileManager.default.createFile(atPath: upperRollbackHiddenWhiteout, contents: Data())
         try Data("hidden rollback".utf8).write(to: URL(fileURLWithPath: upperRollbackHiddenWhiteoutFile))
+        FileManager.default.createFile(atPath: upperRenameHiddenRollbackDestinationWhiteout, contents: Data())
+        try Data("hidden rename rollback".utf8).write(to: URL(fileURLWithPath: upperRenameHiddenRollbackDestination))
         try FileManager.default.createDirectory(atPath: URL(fileURLWithPath: removedDirectoryWhiteout).deletingLastPathComponent().path, withIntermediateDirectories: true)
         FileManager.default.createFile(atPath: removedDirectoryWhiteout, contents: Data())
         try validateMountOptions(lower: lower, upper: upper, work: work)
@@ -744,6 +754,27 @@ struct VolumeMetadataSmoke {
         do {
             _ = try getAttributes(volume: volume, item: cowRename)
             throw SmokeError("renaming COW upper copy left lower source visible")
+        } catch let error as NSError where error.domain == NSPOSIXErrorDomain && error.code == Int(ENOENT) {
+        }
+        let renameHiddenRollback = OSIxItem(relativePath: renameHiddenRollbackSourcePath, physicalPath: lowerRenameHiddenRollbackSource, type: .file, source: .lower)
+        try? FileManager.default.removeItem(atPath: dirtyFile)
+        try FileManager.default.createDirectory(atPath: dirtyFile, withIntermediateDirectories: false)
+        do {
+            try renameItem(volume: volume, item: renameHiddenRollback, sourceDirectory: workspace, sourceName: FSFileName(string: "rename-hidden-rollback-source.txt"), destinationName: FSFileName(string: "rename-hidden-rollback-dest.txt"), destinationDirectory: workspace)
+            throw SmokeError("rename over hidden whiteout succeeded despite dirty flush failure")
+        } catch let error as NSError where error.domain == NSPOSIXErrorDomain || error.domain == NSCocoaErrorDomain {
+        }
+        try FileManager.default.removeItem(atPath: dirtyFile)
+        guard (try? String(contentsOfFile: lowerRenameHiddenRollbackSource, encoding: .utf8)) == "hidden rollback source",
+              !itemExistsNoFollow(upperRenameHiddenRollbackSource),
+              !FileManager.default.fileExists(atPath: upperRenameHiddenRollbackSourceWhiteout),
+              (try? String(contentsOfFile: upperRenameHiddenRollbackDestination, encoding: .utf8)) == "hidden rename rollback",
+              FileManager.default.fileExists(atPath: upperRenameHiddenRollbackDestinationWhiteout) else {
+            throw SmokeError("failed rename over hidden whiteout did not restore source/destination state")
+        }
+        do {
+            _ = try lookupItem(volume: volume, name: FSFileName(string: "rename-hidden-rollback-dest.txt"), directory: workspace)
+            throw SmokeError("failed rename over hidden whiteout exposed hidden destination")
         } catch let error as NSError where error.domain == NSPOSIXErrorDomain && error.code == Int(ENOENT) {
         }
         let staleUpperRename = OSIxItem(relativePath: staleRenamePath, physicalPath: URL(fileURLWithPath: upper).appendingPathComponent(staleRenamePath).path, type: .file, source: .upper)
