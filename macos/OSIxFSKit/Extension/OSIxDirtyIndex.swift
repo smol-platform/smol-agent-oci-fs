@@ -25,6 +25,7 @@ struct OSIxDirtyIndex {
         var paths: [String: String] = [:]
         let fileManager = FileManager.default
         let upperURL = URL(fileURLWithPath: upper).resolvingSymlinksInPath().standardizedFileURL
+        let hasParentTree = !parentTree.isEmpty
 
         func visit(_ directory: URL, relativeBase: String) throws {
             let children = try fileManager.contentsOfDirectory(
@@ -65,6 +66,9 @@ struct OSIxDirtyIndex {
                 }
                 if name.hasPrefix(".wh.") {
                     let target = joinRelative(parentPath(relativePath), String(name.dropFirst(".wh.".count)))
+                    if hasParentTree, parentTree[target] == nil {
+                        continue
+                    }
                     paths[target] = "deleted"
                     continue
                 }

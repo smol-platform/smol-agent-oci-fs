@@ -12,6 +12,7 @@ chmod 0644 "${tmp}/upper/agent/workspace/copied.txt"
 ln -s target.txt "${tmp}/upper/agent/workspace/copied-link"
 ln -s new-target.txt "${tmp}/upper/agent/workspace/changed-link"
 touch "${tmp}/upper/agent/workspace/.wh.old.txt"
+touch "${tmp}/upper/agent/workspace/.wh.never-existed.txt"
 printf "hidden" > "${tmp}/upper/agent/workspace/hidden-file.txt"
 touch "${tmp}/upper/agent/workspace/.wh.hidden-file.txt"
 mkdir -p "${tmp}/upper/agent/workspace/hidden-dir"
@@ -39,7 +40,7 @@ copied_link_mode="$((8#$(/usr/bin/stat -f '%Lp' "${tmp}/upper/agent/workspace/co
 config_digest="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 manifest_digest="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 cat > "${workspace}/.osix/blobs/sha256/${config_digest}" <<JSON
-{"tree":[{"path":"agent","type":"dir","mode":${agent_mode}},{"path":"agent/workspace","type":"dir","mode":${workspace_mode}},{"path":"agent/workspace/copied.txt","type":"file","mode":420,"size":4,"digest":"sha256:${copied_digest}"},{"path":"agent/workspace/copied-link","type":"symlink","mode":${copied_link_mode},"digest":"sha256:${copied_link_digest}","linkname":"target.txt"},{"path":"agent/opaque","type":"dir","mode":${opaque_mode}},{"path":"agent/opaque/lower-only.txt","type":"file","mode":420,"size":10,"digest":"sha256:0000000000000000000000000000000000000000000000000000000000000000"}]}
+{"tree":[{"path":"agent","type":"dir","mode":${agent_mode}},{"path":"agent/workspace","type":"dir","mode":${workspace_mode}},{"path":"agent/workspace/copied.txt","type":"file","mode":420,"size":4,"digest":"sha256:${copied_digest}"},{"path":"agent/workspace/copied-link","type":"symlink","mode":${copied_link_mode},"digest":"sha256:${copied_link_digest}","linkname":"target.txt"},{"path":"agent/workspace/old.txt","type":"file","mode":420,"size":3,"digest":"sha256:1111111111111111111111111111111111111111111111111111111111111111"},{"path":"agent/workspace/hidden-file.txt","type":"file","mode":420,"size":6,"digest":"sha256:2222222222222222222222222222222222222222222222222222222222222222"},{"path":"agent/workspace/hidden-dir","type":"dir","mode":493},{"path":"agent/opaque","type":"dir","mode":${opaque_mode}},{"path":"agent/opaque/lower-only.txt","type":"file","mode":420,"size":10,"digest":"sha256:0000000000000000000000000000000000000000000000000000000000000000"}]}
 JSON
 cat > "${workspace}/.osix/blobs/sha256/${manifest_digest}" <<JSON
 {"config":{"digest":"sha256:${config_digest}"}}
@@ -64,6 +65,7 @@ assert data["paths"]["agent/workspace/changed-link"] == "modified", data
 assert "agent/workspace/copied.txt" not in data["paths"], data
 assert "agent/workspace/copied-link" not in data["paths"], data
 assert "agent/workspace/.wh.old.txt" not in data["paths"], data
+assert "agent/workspace/never-existed.txt" not in data["paths"], data
 assert "agent/workspace/hidden-dir/child.txt" not in data["paths"], data
 assert "agent/opaque/.wh..wh..opq" not in data["paths"], data
 PY
