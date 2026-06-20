@@ -41,6 +41,7 @@ struct VolumeMetadataSmoke {
         let renameLowerDirectoryDestinationPath = "agent/workspace/renamed-lower-dir"
         let renameIntoSelfDirectoryPath = "agent/workspace/rename-into-self"
         let ignoredDirectoryPath = "agent/cache"
+        let unsupportedCreateDirectoryPath = "agent/unsupported-create-dir"
         let staleTypeDirectoryPath = "agent/stale-type-dir"
         let removedDirectoryPath = "agent/removed"
         let nonEmptyLowerDirectoryPath = "agent/non-empty-lower"
@@ -78,6 +79,7 @@ struct VolumeMetadataSmoke {
         let lowerDanglingLink = URL(fileURLWithPath: lower).appendingPathComponent(danglingLinkPath).path
         let lowerIgnoredDirectory = URL(fileURLWithPath: lower).appendingPathComponent(ignoredDirectoryPath).path
         let lowerIgnoredChild = URL(fileURLWithPath: lower).appendingPathComponent(ignoredDirectoryPath + "/child.txt").path
+        let lowerUnsupportedCreateDirectory = URL(fileURLWithPath: lower).appendingPathComponent(unsupportedCreateDirectoryPath).path
         let lowerStaleTypeDirectory = URL(fileURLWithPath: lower).appendingPathComponent(staleTypeDirectoryPath).path
         let lowerRemovedDirectory = URL(fileURLWithPath: lower).appendingPathComponent(removedDirectoryPath).path
         let lowerRemovedFile = URL(fileURLWithPath: lower).appendingPathComponent(removedDirectoryPath + "/stale.txt").path
@@ -86,6 +88,7 @@ struct VolumeMetadataSmoke {
         let lowerXattrDirectory = URL(fileURLWithPath: lower).appendingPathComponent(xattrDirectoryPath).path
         let upperIgnoredDirectory = URL(fileURLWithPath: upper).appendingPathComponent(ignoredDirectoryPath).path
         let upperIgnoredChild = URL(fileURLWithPath: upper).appendingPathComponent(ignoredDirectoryPath + "/child.txt").path
+        let upperUnsupportedCreateDirectory = URL(fileURLWithPath: upper).appendingPathComponent(unsupportedCreateDirectoryPath).path
         let upperStaleTypeDirectory = URL(fileURLWithPath: upper).appendingPathComponent(staleTypeDirectoryPath).path
         let upperStaleCreate = URL(fileURLWithPath: upper).appendingPathComponent(removedDirectoryPath + "/should-not-exist.txt").path
         let upperNonEmptyDirectory = URL(fileURLWithPath: upper).appendingPathComponent(nonEmptyUpperDirectoryPath).path
@@ -170,6 +173,7 @@ struct VolumeMetadataSmoke {
         try FileManager.default.createSymbolicLink(atPath: upperDanglingRename, withDestinationPath: "missing-upper-rename-target")
         try FileManager.default.createDirectory(atPath: lowerIgnoredDirectory, withIntermediateDirectories: true)
         try Data("ignored child".utf8).write(to: URL(fileURLWithPath: lowerIgnoredChild))
+        try FileManager.default.createDirectory(atPath: lowerUnsupportedCreateDirectory, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(atPath: lowerStaleTypeDirectory, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(atPath: URL(fileURLWithPath: lowerRemovedFile).deletingLastPathComponent().path, withIntermediateDirectories: true)
         try Data("stale".utf8).write(to: URL(fileURLWithPath: lowerRemovedFile))
@@ -265,6 +269,14 @@ struct VolumeMetadataSmoke {
         }
         guard !FileManager.default.fileExists(atPath: upperIgnoredDirectory) else {
             throw SmokeError("ignored directory size request copied lower directory into upper")
+        }
+        do {
+            try createItem(volume: volume, name: FSFileName(string: "unsupported-link"), type: .symlink, directory: workspaceItem(lower: lower, relativePath: unsupportedCreateDirectoryPath), attributes: FSItem.SetAttributesRequest())
+            throw SmokeError("createItem accepted unsupported symlink item type")
+        } catch let error as NSError where error.domain == NSPOSIXErrorDomain && error.code == Int(ENOTSUP) {
+        }
+        guard !FileManager.default.fileExists(atPath: upperUnsupportedCreateDirectory) else {
+            throw SmokeError("unsupported createItem left upperdir parent state")
         }
         let directoryMode = FSItem.SetAttributesRequest()
         directoryMode.mode = 0o700

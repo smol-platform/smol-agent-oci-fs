@@ -174,6 +174,9 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
             let currentDirectory = try currentDirectory(for: directory)
             let relativePath = joinRelative(currentDirectory.relativePath, rawName)
             let target = upperPath(upper, relativePath)
+            guard type == .directory || type == .file else {
+                throw posixError(ENOTSUP)
+            }
             if resolveItem(relativePath) != nil {
                 throw posixError(EEXIST)
             }
