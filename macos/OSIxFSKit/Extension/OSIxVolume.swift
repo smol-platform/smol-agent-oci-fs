@@ -636,8 +636,17 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
             return
         }
         do {
-            let entries = try directoryEntries(for: try currentDirectory(for: directory))
+            let includeDotEntries = attributes == nil
+            let entries = try directoryEntries(for: try currentDirectory(for: directory)).filter { entry in
+                includeDotEntries || (entry.name != "." && entry.name != "..")
+            }
+            guard cookie.rawValue <= UInt64(Int.max) else {
+                throw fsKitError(.invalidDirectoryCookie)
+            }
             let start = Int(cookie.rawValue)
+            guard start <= entries.count else {
+                throw fsKitError(.invalidDirectoryCookie)
+            }
             for index in start..<entries.count {
                 let entry = entries[index]
                 let item = entry.item
@@ -1363,6 +1372,10 @@ private func timespec(_ date: Date) -> timespec {
 
 private func posixError(_ code: Int32) -> NSError {
     NSError(domain: NSPOSIXErrorDomain, code: Int(code))
+}
+
+private func fsKitError(_ code: FSError.Code) -> NSError {
+    NSError(domain: FSKitErrorDomain, code: Int(code.rawValue))
 }
 
 @objc
