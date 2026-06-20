@@ -3,6 +3,7 @@ package osix
 import (
 	"archive/tar"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,37 +28,86 @@ func Snapshot(workspaceRoot, target string, opts SnapshotOptions) (SnapshotResul
 	if err != nil {
 		return SnapshotResult{}, fmt.Errorf("read workspace config: %w", err)
 	}
+	if err := ValidateAgentState(target, PolicyOptions{SecretScan: opts.SecretScan}); err != nil {
+		return SnapshotResult{}, err
+	}
 
 	var parent *ParentRef
 	var parentTree []TreeEntry
 	var sequence int64 = 1
-	if digest, err := s.resolveRef("latest"); err == nil {
-		_, _, parentCfg, err := s.loadManifest(digest)
+	parentDigest := ""
+	var mountInfo MountInfo
+	mounted := false
+	if !opts.Checkpoint {
+		if info, err := s.findMount(target); err == nil && info.SourceDigest != "" {
+			mountInfo = info
+			mounted = true
+			parentDigest = info.SourceDigest
+		} else if digest, err := s.resolveRef("latest"); err == nil {
+			parentDigest = digest
+		}
+	}
+	if parentDigest != "" && !opts.Checkpoint {
+		_, _, parentCfg, err := s.loadManifest(parentDigest)
 		if err != nil {
 			return SnapshotResult{}, err
 		}
-		parent = &ParentRef{Snapshot: parentCfg.Snapshot.ID, Digest: digest}
+		parent = &ParentRef{Snapshot: parentCfg.Snapshot.ID, Digest: parentDigest}
 		parentTree = parentCfg.Tree
 		sequence = parentCfg.Snapshot.Sequence + 1
+	}
+
+	if mounted && (mountInfo.Mode == MountOverlay || mountInfo.Mode == MountFUSE) {
+		if err := flushRuntimeForTarget(workspaceRoot, target); err != nil {
+			return SnapshotResult{}, err
+		}
 	}
 
 	tree, dirtyBytes, err := scanTree(target)
 	if err != nil {
 		return SnapshotResult{}, err
 	}
+	layerRoot := target
 	layerEntries, whiteouts := diffLayerEntries(parentTree, tree)
-	layerData, err := makeLayer(target, layerEntries, whiteouts)
+	if mounted && (mountInfo.Mode == MountOverlay || mountInfo.Mode == MountFUSE) && mountInfo.UpperDir != "" {
+		upperEntries, upperWhiteouts, _, err := scanOverlayUpper(mountInfo.UpperDir)
+		if err != nil {
+			return SnapshotResult{}, err
+		}
+		layerRoot = mountInfo.UpperDir
+		layerEntries = changedOverlayEntries(parentTree, upperEntries)
+		whiteouts = upperWhiteouts
+		dirtyBytes = dirtyBytesForEntries(layerEntries)
+	}
+	layerData, err := makeLayer(layerRoot, layerEntries, whiteouts)
 	if err != nil {
 		return SnapshotResult{}, err
+	}
+	encrypt := opts.Encrypt
+	if encrypt == "" {
+		encrypt = ws.Encrypt
+	}
+	encryptionAnnotations := map[string]string(nil)
+	if encrypt != "" {
+		layerData, encryptionAnnotations, err = encryptLayer(layerData, encrypt)
+		if err != nil {
+			return SnapshotResult{}, err
+		}
 	}
 	layerDesc, err := s.writeBlob(layerData)
 	if err != nil {
 		return SnapshotResult{}, err
 	}
 	layerDesc.MediaType = MediaTypeLayer
+	if encrypt != "" {
+		layerDesc.MediaType = MediaTypeLayerEnc
+	}
 	layerDesc.Annotations = map[string]string{
 		"com.osix.layer.kind":     "filesystem-diff",
 		"com.osix.diff.algorithm": "overlayfs-whiteout-v1",
+	}
+	for key, value := range encryptionAnnotations {
+		layerDesc.Annotations[key] = value
 	}
 
 	now := time.Now().UTC().Truncate(time.Second)
@@ -122,6 +172,9 @@ func Snapshot(workspaceRoot, target string, opts SnapshotOptions) (SnapshotResul
 		"com.osix.kind":        "delta",
 		"com.osix.branch":      ws.DefaultBranch,
 	}
+	if opts.Checkpoint {
+		annotations["com.osix.kind"] = "checkpoint"
+	}
 	if parent != nil {
 		annotations["com.osix.parent"] = parent.Digest
 	}
@@ -144,7 +197,16 @@ func Snapshot(workspaceRoot, target string, opts SnapshotOptions) (SnapshotResul
 
 	tags := uniqueTags([]string{snapshotID, opts.Tag, opts.AlsoTag, "latest"})
 	for _, tag := range tags {
-		if err := s.writeRef(tag, manifestDesc.Digest); err != nil {
+		expected := ""
+		if opts.ExpectedParent != "" && tag != snapshotID {
+			expected = opts.ExpectedParent
+		}
+		if err := s.writeRefIfExpected(tag, manifestDesc.Digest, expected); err != nil {
+			return SnapshotResult{}, err
+		}
+	}
+	if opts.Sign != "" {
+		if _, err := SignSnapshot(workspaceRoot, manifestDesc.Digest, opts.Sign, opts.Attest); err != nil {
 			return SnapshotResult{}, err
 		}
 	}
@@ -171,7 +233,12 @@ func Restore(workspaceRoot, ref, target string, opts RestoreOptions) error {
 		if len(manifest.Layers) != 1 {
 			return fmt.Errorf("local prototype expects exactly one layer, got %d", len(manifest.Layers))
 		}
-		layer, err := s.readBlob(manifest.Layers[0].Digest)
+		layerDesc := manifest.Layers[0]
+		layer, err := s.readBlob(layerDesc.Digest)
+		if err != nil {
+			return err
+		}
+		layer, err = decryptLayer(layer, layerDesc, opts.Decrypt)
 		if err != nil {
 			return err
 		}
@@ -179,7 +246,11 @@ func Restore(workspaceRoot, ref, target string, opts RestoreOptions) error {
 			return err
 		}
 	}
-	return nil
+	return writeReplayMarker(target)
+}
+
+func Mount(workspaceRoot, ref, target string, opts MountOptions) (MountInfo, error) {
+	return NewMountRuntime(workspaceRoot, opts.Mode).Mount(context.Background(), ref, target, opts)
 }
 
 func Diff(workspaceRoot, leftRef, rightRef string) ([]Change, error) {
@@ -195,8 +266,98 @@ func Diff(workspaceRoot, leftRef, rightRef string) ([]Change, error) {
 	if err != nil {
 		return nil, err
 	}
-	leftMap := treeMap(left.Tree)
-	rightMap := treeMap(right.Tree)
+	return diffTrees(left.Tree, right.Tree), nil
+}
+
+func DiffMount(workspaceRoot, target string) ([]Change, error) {
+	s, err := findStore(workspaceRoot)
+	if err != nil {
+		return nil, err
+	}
+	info, err := s.findMount(target)
+	if err != nil {
+		return nil, err
+	}
+	_, _, parentCfg, err := s.loadManifest(info.SourceDigest)
+	if err != nil {
+		return nil, err
+	}
+	if (info.Mode == MountOverlay || info.Mode == MountFUSE) && info.UpperDir != "" {
+		if err := flushRuntimeForTarget(workspaceRoot, target); err != nil {
+			return nil, err
+		}
+		upperEntries, whiteouts, _, err := scanOverlayUpper(info.UpperDir)
+		if err != nil {
+			return nil, err
+		}
+		return diffOverlayUpper(parentCfg.Tree, upperEntries, whiteouts), nil
+	}
+	currentTree, _, err := scanTree(target)
+	if err != nil {
+		return nil, err
+	}
+	return diffTrees(parentCfg.Tree, currentTree), nil
+}
+
+func diffOverlayUpper(parent, upper []TreeEntry, whiteouts []string) []Change {
+	parentMap := treeMap(parent)
+	seen := map[string]bool{}
+	var changes []Change
+	for _, entry := range upper {
+		if seen[entry.Path] {
+			continue
+		}
+		seen[entry.Path] = true
+		kind := "A"
+		if parentEntry, ok := parentMap[entry.Path]; ok {
+			if parentEntry == entry {
+				continue
+			}
+			kind = "M"
+		}
+		changes = append(changes, Change{Kind: kind, Path: "/" + entry.Path})
+	}
+	for _, path := range whiteouts {
+		if seen[path] {
+			continue
+		}
+		seen[path] = true
+		changes = append(changes, Change{Kind: "D", Path: "/" + path})
+	}
+	sort.Slice(changes, func(i, j int) bool {
+		if changes[i].Path == changes[j].Path {
+			return changes[i].Kind < changes[j].Kind
+		}
+		return changes[i].Path < changes[j].Path
+	})
+	return changes
+}
+
+func changedOverlayEntries(parent, upper []TreeEntry) []TreeEntry {
+	parentMap := treeMap(parent)
+	changed := make([]TreeEntry, 0, len(upper))
+	for _, entry := range upper {
+		if parentEntry, ok := parentMap[entry.Path]; ok && parentEntry == entry {
+			continue
+		}
+		changed = append(changed, entry)
+	}
+	return changed
+}
+
+func dirtyBytesForEntries(entries []TreeEntry) int64 {
+	var total int64
+	for _, entry := range entries {
+		if entry.Type == "file" {
+			total += entry.Size
+		}
+	}
+	return total
+}
+
+func diffTrees(left, right []TreeEntry) []Change {
+	leftMap := treeMap(left)
+	rightMap := treeMap(right)
 	seen := map[string]bool{}
 	var changes []Change
 	for path, rightEntry := range rightMap {
@@ -221,7 +382,7 @@ func Diff(workspaceRoot, leftRef, rightRef string) ([]Change, error) {
 		}
 		return changes[i].Path < changes[j].Path
 	})
-	return changes, nil
+	return changes
 }
 
 func Fork(workspaceRoot, sourceRef, targetTag string) (string, error) {
@@ -233,6 +394,9 @@ func Fork(workspaceRoot, sourceRef, targetTag string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if err := ValidateChain(workspaceRoot, digest); err != nil {
+		return "", err
+	}
 	if targetTag == "" || strings.HasPrefix(targetTag, "sha256:") {
 		return "", fmt.Errorf("target must be a mutable tag name")
 	}
@@ -240,6 +404,46 @@ func Fork(workspaceRoot, sourceRef, targetTag string) (string, error) {
 		return "", err
 	}
 	return digest, nil
+}
+
+func ValidateChain(workspaceRoot, ref string) error {
+	s, err := findStore(workspaceRoot)
+	if err != nil {
+		return err
+	}
+	digest, err := s.resolveRef(ref)
+	if err != nil {
+		return err
+	}
+	chain, err := s.snapshotChainWithDigests(digest)
+	if err != nil {
+		return err
+	}
+	if len(chain) == 0 {
+		return fmt.Errorf("empty snapshot chain")
+	}
+	base := chain[0].Config.Base.Digest
+	var prevSeq int64
+	for i, item := range chain {
+		if item.Config.Base.Digest != base {
+			return fmt.Errorf("snapshot %s base mismatch: %s != %s", item.Digest, item.Config.Base.Digest, base)
+		}
+		if i == 0 {
+			if item.Config.Parent != nil {
+				return fmt.Errorf("root snapshot %s unexpectedly has parent %s", item.Digest, item.Config.Parent.Digest)
+			}
+		} else {
+			parentDigest := chain[i-1].Digest
+			if item.Config.Parent == nil || item.Config.Parent.Digest != parentDigest {
+				return fmt.Errorf("snapshot %s parent mismatch", item.Digest)
+			}
+			if item.Config.Snapshot.Sequence <= prevSeq {
+				return fmt.Errorf("snapshot %s sequence is not increasing", item.Digest)
+			}
+		}
+		prevSeq = item.Config.Snapshot.Sequence
+	}
+	return nil
 }
 
 func Show(workspaceRoot, ref string) (string, error) {
@@ -276,6 +480,52 @@ func Refs(workspaceRoot string) ([]Ref, error) {
 		return nil, err
 	}
 	return s.listRefs()
+}
+
+func (s store) writeMount(info MountInfo) error {
+	key, err := mountKey(info.Target)
+	if err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(info, "", "  ")
+	if err != nil {
+		return err
+	}
+	dir := filepath.Join(s.mountsRoot(), key)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "mount.json"), data, 0o600); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(s.mountsRoot(), key+".json"), data, 0o600)
+}
+
+func (s store) findMount(target string) (MountInfo, error) {
+	key, err := mountKey(target)
+	if err != nil {
+		return MountInfo{}, err
+	}
+	data, err := os.ReadFile(filepath.Join(s.mountsRoot(), key, "mount.json"))
+	if os.IsNotExist(err) {
+		data, err = os.ReadFile(filepath.Join(s.mountsRoot(), key+".json"))
+	}
+	if err != nil {
+		return MountInfo{}, err
+	}
+	var info MountInfo
+	if err := json.Unmarshal(data, &info); err != nil {
+		return MountInfo{}, err
+	}
+	return info, nil
+}
+
+func absPath(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return path
+	}
+	return abs
 }
 
 func scanTree(root string) ([]TreeEntry, int64, error) {
@@ -375,6 +625,15 @@ func makeLayer(root string, tree []TreeEntry, whiteouts []string) ([]byte, error
 		if err != nil {
 			return nil, err
 		}
+		var fileData []byte
+		if info.Mode().IsRegular() && shouldRedact(entry.Path) {
+			fileData, err = os.ReadFile(path)
+			if err != nil {
+				return nil, err
+			}
+			fileData = redactLog(fileData)
+			hdr.Size = int64(len(fileData))
+		}
 		hdr.Name = entry.Path
 		hdr.ModTime = time.Unix(0, 0).UTC()
 		hdr.AccessTime = time.Unix(0, 0).UTC()
@@ -387,17 +646,23 @@ func makeLayer(root string, tree []TreeEntry, whiteouts []string) ([]byte, error
 			return nil, err
 		}
 		if info.Mode().IsRegular() {
-			f, err := os.Open(path)
-			if err != nil {
-				return nil, err
-			}
-			_, copyErr := io.Copy(tw, f)
-			closeErr := f.Close()
-			if copyErr != nil {
-				return nil, copyErr
-			}
-			if closeErr != nil {
-				return nil, closeErr
+			if fileData != nil {
+				if _, err := tw.Write(fileData); err != nil {
+					return nil, err
+				}
+			} else {
+				f, err := os.Open(path)
+				if err != nil {
+					return nil, err
+				}
+				_, copyErr := io.Copy(tw, f)
+				closeErr := f.Close()
+				if copyErr != nil {
+					return nil, copyErr
+				}
+				if closeErr != nil {
+					return nil, closeErr
+				}
 			}
 		}
 	}
@@ -551,6 +816,62 @@ func diffLayerEntries(parent, current []TreeEntry) ([]TreeEntry, []string) {
 	return entries, whiteouts
 }
 
+func scanOverlayUpper(root string) ([]TreeEntry, []string, int64, error) {
+	entries, dirtyBytes, err := scanTree(root)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	var filtered []TreeEntry
+	for _, entry := range entries {
+		if overlayWhiteoutTarget(entry.Path) != "" {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	whiteoutSet := map[string]bool{}
+	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if path == root {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		target := overlayWhiteoutTarget(filepath.ToSlash(rel))
+		if target != "" {
+			whiteoutSet[target] = true
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	whiteouts := make([]string, 0, len(whiteoutSet))
+	for target := range whiteoutSet {
+		whiteouts = append(whiteouts, target)
+	}
+	sort.Strings(whiteouts)
+	return filtered, whiteouts, dirtyBytes, nil
+}
+
+func overlayWhiteoutTarget(path string) string {
+	dir, base := filepath.Split(filepath.ToSlash(path))
+	if base == ".wh..wh..opq" {
+		return ""
+	}
+	if !strings.HasPrefix(base, ".wh.") {
+		return ""
+	}
+	target := strings.TrimPrefix(base, ".wh.")
+	if target == "" {
+		return ""
+	}
+	return filepath.ToSlash(filepath.Join(dir, target))
+}
+
 func whiteoutName(target string) string {
 	dir, base := filepath.Split(filepath.ToSlash(target))
 	return filepath.ToSlash(filepath.Join(dir, ".wh."+base))
@@ -573,14 +894,16 @@ func digestTree(entries []TreeEntry) string {
 func shouldExclude(rel string) bool {
 	rel = filepath.ToSlash(strings.TrimPrefix(rel, "/"))
 	exact := map[string]bool{
-		".osix":         true,
-		".env":          true,
-		"agent/secrets": true,
-		"secrets":       true,
-		"agent/tmp":     true,
-		"tmp":           true,
-		"agent/cache":   true,
-		"cache":         true,
+		".osix":                    true,
+		".osix-replay-policy.json": true,
+		".osix-turn-boundary":      true,
+		".env":                     true,
+		"agent/secrets":            true,
+		"secrets":                  true,
+		"agent/tmp":                true,
+		"tmp":                      true,
+		"agent/cache":              true,
+		"cache":                    true,
 	}
 	if exact[rel] {
 		return true

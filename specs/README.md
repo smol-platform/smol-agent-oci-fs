@@ -28,6 +28,7 @@ OSIx defines a disciplined convention for storing branchable, encrypted agent st
 - [CLI And Runtime](./03-cli-and-runtime.md)
 - [Security And Provenance](./04-security-and-provenance.md)
 - [Agent State Semantics](./05-agent-state-semantics.md)
+- [FUSE And Overlay Filesystem Runtime](./06-fuse-overlay-runtime.md)
 - [Milestones](./milestones.md)
 
 ## Compatibility Modes
@@ -39,4 +40,3 @@ OSIx implementations SHOULD support these publication modes:
 - `hybrid`: each snapshot is published as an image manifest for broad compatibility, with referrer artifacts for signatures, provenance, indexes, and audit metadata.
 
 The v0 default is `hybrid`, with `image` as the fallback for registries that do not support OCI 1.1 referrers.
-

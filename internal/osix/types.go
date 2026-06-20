@@ -8,6 +8,9 @@ const (
 	MediaTypeOCIManifest = "application/vnd.oci.image.manifest.v1+json"
 	MediaTypeConfig      = "application/vnd.osix.agent.config.v1+json"
 	MediaTypeLayer       = "application/vnd.osix.agent.layer.diff.v1.tar+zstd"
+	MediaTypeLayerEnc    = "application/vnd.osix.agent.layer.diff.v1.tar+zstd+encrypted"
+	MediaTypeSignature   = "application/vnd.osix.agent.signature.v1+json"
+	MediaTypeProvenance  = "application/vnd.osix.agent.provenance.v1+json"
 	ArtifactTypeSnapshot = "application/vnd.osix.agent.snapshot.v1"
 )
 
@@ -19,6 +22,7 @@ type WorkspaceConfig struct {
 	StateRef      string `json:"stateRef"`
 	Mount         string `json:"mount"`
 	DefaultBranch string `json:"defaultBranch"`
+	Encrypt       string `json:"encrypt,omitempty"`
 }
 
 type AgentConfig struct {
@@ -106,12 +110,19 @@ type InitOptions struct {
 	StateRef      string
 	Mount         string
 	DefaultBranch string
+	Encrypt       string
 }
 
 type SnapshotOptions struct {
-	Message string
-	Tag     string
-	AlsoTag string
+	Message        string
+	Tag            string
+	AlsoTag        string
+	Encrypt        string
+	Sign           string
+	Attest         string
+	ExpectedParent string
+	SecretScan     string
+	Checkpoint     bool
 }
 
 type SnapshotResult struct {
@@ -120,6 +131,46 @@ type SnapshotResult struct {
 }
 
 type RestoreOptions struct {
+	Force   bool
+	Decrypt string
+}
+
+type MountMode string
+
+const (
+	MountAuto         MountMode = "auto"
+	MountOverlay      MountMode = "overlay"
+	MountFUSE         MountMode = "fuse"
+	MountMaterialized MountMode = "materialized"
+)
+
+type MountOptions struct {
+	Force   bool
+	RW      bool
+	Branch  string
+	Decrypt string
+	Mode    MountMode
+	Cache   string
+	Lazy    bool
+}
+
+type MountInfo struct {
+	Target       string    `json:"target"`
+	SourceRef    string    `json:"sourceRef"`
+	SourceDigest string    `json:"sourceDigest"`
+	Mode         MountMode `json:"mode"`
+	Branch       string    `json:"branch,omitempty"`
+	RW           bool      `json:"rw"`
+	UpperDir     string    `json:"upperDir,omitempty"`
+	WorkDir      string    `json:"workDir,omitempty"`
+	LowerDir     string    `json:"lowerDir,omitempty"`
+	State        string    `json:"state,omitempty"`
+	PID          int       `json:"pid,omitempty"`
+	CreatedAt    time.Time `json:"createdAt"`
+	UpdatedAt    time.Time `json:"updatedAt,omitempty"`
+}
+
+type UnmountOptions struct {
 	Force bool
 }
 
@@ -131,4 +182,59 @@ type Change struct {
 type Ref struct {
 	Name   string
 	Digest string
+}
+
+type VerifyOptions struct {
+	TrustedKey string
+}
+
+type VerifyResult struct {
+	ManifestDigest   string
+	SignatureDigest  string
+	ProvenanceDigest string
+	Signer           string
+}
+
+type WatchOptions struct {
+	Every          time.Duration
+	MaxDirtyBytes  int64
+	OnTurnBoundary bool
+	Push           bool
+	Encrypt        string
+	Once           bool
+	Iterations     int
+	TagPrefix      string
+}
+
+type WatchResult struct {
+	Snapshots []SnapshotResult `json:"snapshots"`
+	StatePath string           `json:"statePath"`
+}
+
+type WatchState struct {
+	Target       string    `json:"target"`
+	LastSnapshot string    `json:"lastSnapshot,omitempty"`
+	LastError    string    `json:"lastError,omitempty"`
+	Iterations   int       `json:"iterations"`
+	UpdatedAt    time.Time `json:"updatedAt"`
+}
+
+type CompactPolicy struct {
+	SquashEvery    int
+	KeepSnapshots  []string
+	PreserveSigned bool
+	DryRun         bool
+	CheckpointTag  string
+}
+
+type CompactPlan struct {
+	SourceRef        string   `json:"sourceRef"`
+	SourceDigest     string   `json:"sourceDigest"`
+	ChainLength      int      `json:"chainLength"`
+	CreateCheckpoint bool     `json:"createCheckpoint"`
+	CheckpointTag    string   `json:"checkpointTag,omitempty"`
+	CheckpointDigest string   `json:"checkpointDigest,omitempty"`
+	Keep             []string `json:"keep"`
+	DeleteCandidates []string `json:"deleteCandidates"`
+	Reasons          []string `json:"reasons"`
 }

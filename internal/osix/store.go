@@ -31,6 +31,7 @@ func Init(root string, opts InitOptions) (WorkspaceConfig, error) {
 		StateRef:      opts.StateRef,
 		Mount:         opts.Mount,
 		DefaultBranch: opts.DefaultBranch,
+		Encrypt:       opts.Encrypt,
 	}
 	store, err := openStore(root)
 	if err != nil {
@@ -45,6 +46,7 @@ func Init(root string, opts InitOptions) (WorkspaceConfig, error) {
 		filepath.Join(store.root, "work"),
 		filepath.Join(store.root, "manifests"),
 		filepath.Join(store.root, "keys"),
+		filepath.Join(store.root, "mounts"),
 	} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return cfg, err
@@ -54,6 +56,14 @@ func Init(root string, opts InitOptions) (WorkspaceConfig, error) {
 		return cfg, err
 	}
 	return cfg, writeWorkspaceConfig(store.configPath(), cfg)
+}
+
+func Workspace(workspaceRoot string) (WorkspaceConfig, error) {
+	s, err := findStore(workspaceRoot)
+	if err != nil {
+		return WorkspaceConfig{}, err
+	}
+	return readWorkspaceConfig(s.configPath())
 }
 
 type store struct {
@@ -101,6 +111,10 @@ func (s store) refsRoot() string {
 	return filepath.Join(s.root, "refs")
 }
 
+func (s store) mountsRoot() string {
+	return filepath.Join(s.root, "mounts")
+}
+
 func (s store) writeBlob(data []byte) (Descriptor, error) {
 	digest := digestBytes(data)
 	hexDigest := strings.TrimPrefix(digest, "sha256:")
@@ -143,6 +157,21 @@ func (s store) writeRef(name, digest string) error {
 		return err
 	}
 	return os.WriteFile(path, []byte(digest+"\n"), 0o644)
+}
+
+func (s store) writeRefIfExpected(name, digest, expected string) error {
+	if strings.TrimSpace(expected) == "" {
+		return s.writeRef(name, digest)
+	}
+	current, err := s.resolveRef(name)
+	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) && !strings.Contains(err.Error(), "no such file") {
+			return err
+		}
+	} else if current != expected {
+		return fmt.Errorf("branch conflict for %s: expected %s but current is %s", name, expected, current)
+	}
+	return s.writeRef(name, digest)
 }
 
 func (s store) resolveRef(ref string) (string, error) {
@@ -214,6 +243,36 @@ func (s store) loadManifest(ref string) (string, Manifest, AgentConfig, error) {
 	return digest, manifest, cfg, nil
 }
 
+type snapshotChainItem struct {
+	Digest   string
+	Manifest Manifest
+	Config   AgentConfig
+}
+
+func (s store) snapshotChainWithDigests(digest string) ([]snapshotChainItem, error) {
+	var chain []snapshotChainItem
+	seen := map[string]bool{}
+	for digest != "" {
+		if seen[digest] {
+			return nil, fmt.Errorf("snapshot parent cycle at %s", digest)
+		}
+		seen[digest] = true
+		resolved, manifest, cfg, err := s.loadManifest(digest)
+		if err != nil {
+			return nil, err
+		}
+		chain = append(chain, snapshotChainItem{Digest: resolved, Manifest: manifest, Config: cfg})
+		if cfg.Parent == nil {
+			break
+		}
+		digest = cfg.Parent.Digest
+	}
+	for i, j := 0, len(chain)-1; i < j; i, j = i+1, j-1 {
+		chain[i], chain[j] = chain[j], chain[i]
+	}
+	return chain, nil
+}
+
 func readWorkspaceConfig(path string) (WorkspaceConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -246,6 +305,8 @@ func readWorkspaceConfig(path string) (WorkspaceConfig, error) {
 			cfg.Mount = val
 		case "default_branch":
 			cfg.DefaultBranch = val
+		case "encrypt":
+			cfg.Encrypt = val
 		}
 	}
 	return cfg, nil
@@ -259,7 +320,8 @@ base_digest = %q
 state_ref = %q
 mount = %q
 default_branch = %q
-`, cfg.OSIxVersion, cfg.Name, cfg.Base, cfg.BaseDigest, cfg.StateRef, cfg.Mount, cfg.DefaultBranch)
+encrypt = %q
+`, cfg.OSIxVersion, cfg.Name, cfg.Base, cfg.BaseDigest, cfg.StateRef, cfg.Mount, cfg.DefaultBranch, cfg.Encrypt)
 	return os.WriteFile(path, []byte(text), 0o644)
 }
 
@@ -289,4 +351,12 @@ func safeRefName(name string) string {
 
 func unsafeRefName(name string) string {
 	return strings.ReplaceAll(name, "__", "/")
+}
+
+func mountKey(target string) (string, error) {
+	abs, err := filepath.Abs(target)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimPrefix(digestBytes([]byte(abs)), "sha256:"), nil
 }
