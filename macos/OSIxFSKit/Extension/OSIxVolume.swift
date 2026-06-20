@@ -793,8 +793,9 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
             try handle.close()
             handleClosed = true
             let rawBuffer = unsafeBitCast(buffer, to: OSIxMutableFileDataBuffer.self).mutableBytes()
-            data.copyBytes(to: rawBuffer.assumingMemoryBound(to: UInt8.self), count: data.count)
-            reply(data.count, nil)
+            let copyCount = min(data.count, buffer.length)
+            data.copyBytes(to: rawBuffer.assumingMemoryBound(to: UInt8.self), count: copyCount)
+            reply(copyCount, nil)
         } catch {
             reply(0, error)
         }

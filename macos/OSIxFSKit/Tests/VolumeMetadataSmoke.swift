@@ -367,6 +367,22 @@ struct VolumeMetadataSmoke {
         try openItem(volume: volume, item: item, modes: .read)
         try closeItem(volume: volume, item: item, modes: [])
         try deactivateItem(volume: volume, item: item)
+        guard try readData(volume: volume, item: item, length: 3, offset: 1) == Data("owe".utf8) else {
+            throw SmokeError("read did not return requested lower file slice")
+        }
+        guard try readData(volume: volume, item: item, length: 8, offset: 99).isEmpty else {
+            throw SmokeError("read beyond EOF returned data")
+        }
+        do {
+            _ = try readData(volume: volume, item: item, length: 3, offset: -1)
+            throw SmokeError("read accepted negative offset")
+        } catch let error as NSError where error.domain == NSPOSIXErrorDomain && error.code == Int(EINVAL) {
+        }
+        do {
+            _ = try readData(volume: volume, item: workspaceItem(lower: lower, relativePath: "agent/workspace"), length: 3, offset: 0)
+            throw SmokeError("read accepted a directory")
+        } catch let error as NSError where error.domain == NSPOSIXErrorDomain && error.code == Int(EISDIR) {
+        }
         do {
             try openItem(volume: volume, item: workspaceItem(lower: lower, relativePath: "agent/workspace"), modes: .read)
             throw SmokeError("openItem accepted a directory")
@@ -1558,6 +1574,21 @@ struct VolumeMetadataSmoke {
         }
     }
 
+    static func readData(volume: OSIxVolume, item: FSItem, length: Int, offset: off_t) throws -> Data {
+        let buffer = SmokeMutableFileDataBuffer(length: length)
+        let fsBuffer = unsafeBitCast(buffer, to: FSMutableFileDataBuffer.self)
+        var replyCount = 0
+        var replyError: (any Error)?
+        volume.read(from: item, at: offset, length: length, into: fsBuffer) { count, error in
+            replyCount = count
+            replyError = error
+        }
+        if let replyError {
+            throw replyError
+        }
+        return buffer.data(count: replyCount)
+    }
+
     static func synchronize(volume: OSIxVolume) throws {
         var replyError: (any Error)?
         volume.synchronize(flags: FSSyncFlags(rawValue: 0)!) { error in
@@ -1637,6 +1668,39 @@ struct VolumeMetadataSmoke {
             throw replyError
         }
         return (replyNames ?? []).compactMap(\.string)
+    }
+}
+
+@objc
+private final class SmokeMutableFileDataBuffer: NSObject {
+    private let raw: UnsafeMutableRawPointer
+    private let capacity: Int
+    private let requestedLength: Int
+
+    init(length: Int) {
+        requestedLength = length
+        capacity = max(length, 1)
+        raw = UnsafeMutableRawPointer.allocate(byteCount: capacity, alignment: 1)
+        raw.initializeMemory(as: UInt8.self, repeating: 0, count: capacity)
+        super.init()
+    }
+
+    deinit {
+        raw.deallocate()
+    }
+
+    @objc
+    func mutableBytes() -> UnsafeMutableRawPointer {
+        raw
+    }
+
+    @objc
+    var length: Int {
+        requestedLength
+    }
+
+    func data(count: Int) -> Data {
+        Data(bytes: raw, count: min(count, capacity))
     }
 }
 
