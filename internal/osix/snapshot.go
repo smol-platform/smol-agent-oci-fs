@@ -840,8 +840,15 @@ func scanOverlayUpper(root string) ([]TreeEntry, []string, int64, error) {
 		if err != nil {
 			return err
 		}
-		target := overlayWhiteoutTarget(filepath.ToSlash(rel))
-		if target != "" {
+		rel = filepath.ToSlash(rel)
+		if shouldExclude(rel) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		target := overlayWhiteoutTarget(rel)
+		if target != "" && !shouldExclude(target) {
 			whiteoutSet[target] = true
 		}
 		return nil

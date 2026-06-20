@@ -704,6 +704,9 @@ func TestSnapshotUsesOverlayUpperdirWhiteouts(t *testing.T) {
 	mustWrite(t, filepath.Join(upper, "agent", "workspace", "new.txt"), "new\n")
 	mustWrite(t, filepath.Join(upper, "agent", "workspace", "copied.txt"), "same\n")
 	mustWrite(t, filepath.Join(upper, "agent", "workspace", ".wh.old.txt"), "")
+	mustWrite(t, filepath.Join(upper, ".wh..env"), "")
+	mustWrite(t, filepath.Join(upper, ".osix", ".wh.mount.json"), "")
+	mustWrite(t, filepath.Join(upper, "agent", "tmp", ".wh.scratch.txt"), "")
 
 	s, err := findStore(root)
 	if err != nil {
