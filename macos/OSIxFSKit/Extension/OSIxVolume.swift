@@ -5,7 +5,7 @@ import FSKit
 private let opaqueWhiteoutName = ".wh..wh..opq"
 
 @objc
-final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperations, FSVolume.XattrOperations, FSVolume.OpenCloseOperations {
+final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperations, FSVolume.XattrOperations, FSVolume.OpenCloseOperations, FSVolume.PreallocateOperations {
     private let fileManager = FileManager.default
     private var mountOptions: OSIxMountOptions?
     private var root = OSIxItem.root
@@ -335,6 +335,10 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
 
     func closeItem(_ item: FSItem, modes: FSVolume.OpenModes, replyHandler reply: @escaping ((any Error)?) -> Void) {
         reply(nil)
+    }
+
+    func preallocateSpace(for item: FSItem, at offset: off_t, length: Int, flags: FSVolume.PreallocateFlags, replyHandler reply: @escaping (Int, (any Error)?) -> Void) {
+        reply(0, posixError(ENOTSUP))
     }
 
     func getXattr(named name: FSFileName, of item: FSItem, replyHandler reply: @escaping (Data?, (any Error)?) -> Void) {

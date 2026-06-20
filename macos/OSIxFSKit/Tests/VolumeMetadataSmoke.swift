@@ -57,6 +57,7 @@ struct VolumeMetadataSmoke {
         let ignoredDirectoryPath = "agent/cache"
         let unsupportedCreateDirectoryPath = "agent/unsupported-create-dir"
         let unsupportedHardLinkPath = "agent/unsupported-create-dir/hard-link"
+        let unsupportedPreallocatePath = "agent/unsupported-preallocate/file.txt"
         let emptySymlinkDirectoryPath = "agent/empty-symlink-dir"
         let staleTypeDirectoryPath = "agent/stale-type-dir"
         let removedDirectoryPath = "agent/removed"
@@ -108,6 +109,7 @@ struct VolumeMetadataSmoke {
         let lowerIgnoredDirectory = URL(fileURLWithPath: lower).appendingPathComponent(ignoredDirectoryPath).path
         let lowerIgnoredChild = URL(fileURLWithPath: lower).appendingPathComponent(ignoredDirectoryPath + "/child.txt").path
         let lowerUnsupportedCreateDirectory = URL(fileURLWithPath: lower).appendingPathComponent(unsupportedCreateDirectoryPath).path
+        let lowerUnsupportedPreallocateFile = URL(fileURLWithPath: lower).appendingPathComponent(unsupportedPreallocatePath).path
         let lowerEmptySymlinkDirectory = URL(fileURLWithPath: lower).appendingPathComponent(emptySymlinkDirectoryPath).path
         let lowerStaleTypeDirectory = URL(fileURLWithPath: lower).appendingPathComponent(staleTypeDirectoryPath).path
         let lowerRemovedDirectory = URL(fileURLWithPath: lower).appendingPathComponent(removedDirectoryPath).path
@@ -121,6 +123,7 @@ struct VolumeMetadataSmoke {
         let upperIgnoredChild = URL(fileURLWithPath: upper).appendingPathComponent(ignoredDirectoryPath + "/child.txt").path
         let upperUnsupportedCreateDirectory = URL(fileURLWithPath: upper).appendingPathComponent(unsupportedCreateDirectoryPath).path
         let upperUnsupportedHardLink = URL(fileURLWithPath: upper).appendingPathComponent(unsupportedHardLinkPath).path
+        let upperUnsupportedPreallocateFile = URL(fileURLWithPath: upper).appendingPathComponent(unsupportedPreallocatePath).path
         let upperEmptySymlinkDirectory = URL(fileURLWithPath: upper).appendingPathComponent(emptySymlinkDirectoryPath).path
         let upperStaleTypeDirectory = URL(fileURLWithPath: upper).appendingPathComponent(staleTypeDirectoryPath).path
         let upperStaleCreate = URL(fileURLWithPath: upper).appendingPathComponent(removedDirectoryPath + "/should-not-exist.txt").path
@@ -268,6 +271,8 @@ struct VolumeMetadataSmoke {
         try FileManager.default.createDirectory(atPath: lowerIgnoredDirectory, withIntermediateDirectories: true)
         try Data("ignored child".utf8).write(to: URL(fileURLWithPath: lowerIgnoredChild))
         try FileManager.default.createDirectory(atPath: lowerUnsupportedCreateDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: URL(fileURLWithPath: lowerUnsupportedPreallocateFile).deletingLastPathComponent().path, withIntermediateDirectories: true)
+        try Data("preallocate".utf8).write(to: URL(fileURLWithPath: lowerUnsupportedPreallocateFile))
         try FileManager.default.createDirectory(atPath: lowerEmptySymlinkDirectory, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(atPath: lowerStaleTypeDirectory, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(atPath: URL(fileURLWithPath: lowerRemovedFile).deletingLastPathComponent().path, withIntermediateDirectories: true)
@@ -501,6 +506,18 @@ struct VolumeMetadataSmoke {
         guard !FileManager.default.fileExists(atPath: upperUnsupportedHardLink),
               !FileManager.default.fileExists(atPath: upperUnsupportedCreateDirectory) else {
             throw SmokeError("unsupported createLink left upperdir state")
+        }
+        do {
+            try preallocateSpace(
+                volume: volume,
+                item: OSIxItem(relativePath: unsupportedPreallocatePath, physicalPath: lowerUnsupportedPreallocateFile, type: .file, source: .lower),
+                length: 4096
+            )
+            throw SmokeError("preallocateSpace accepted unsupported preallocation")
+        } catch let error as NSError where error.domain == NSPOSIXErrorDomain && error.code == Int(ENOTSUP) {
+        }
+        guard !itemExistsNoFollow(upperUnsupportedPreallocateFile) else {
+            throw SmokeError("unsupported preallocateSpace copied lower file into upper")
         }
         do {
             try createSymbolicLink(volume: volume, name: FSFileName(string: "empty-link"), directory: workspaceItem(lower: lower, relativePath: emptySymlinkDirectoryPath), contents: FSFileName(string: ""), attributes: FSItem.SetAttributesRequest())
@@ -1347,6 +1364,16 @@ struct VolumeMetadataSmoke {
     static func closeItem(volume: OSIxVolume, item: FSItem, modes: FSVolume.OpenModes) throws {
         var replyError: (any Error)?
         volume.closeItem(item, modes: modes) { error in
+            replyError = error
+        }
+        if let replyError {
+            throw replyError
+        }
+    }
+
+    static func preallocateSpace(volume: OSIxVolume, item: FSItem, length: Int) throws {
+        var replyError: (any Error)?
+        volume.preallocateSpace(for: item, at: 0, length: length, flags: [.fromEOF]) { _, error in
             replyError = error
         }
         if let replyError {
