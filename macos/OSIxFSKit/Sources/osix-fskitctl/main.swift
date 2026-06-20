@@ -52,7 +52,6 @@ struct OSIxFSKitControl {
     static func mount(_ opts: [String: String]) async throws {
         let bundleID = opts["bundle-id"] ?? environment("OSIX_FSKIT_BUNDLE_ID", defaultBundleID)
         let fsType = opts["fstype"] ?? environment("OSIX_FSKIT_TYPE", defaultFileSystemType)
-        try await requireReady(bundleID: bundleID, fileSystemType: fsType)
 
         let target = try required(opts, "target")
         let sourceRef = try required(opts, "source-ref")
@@ -62,6 +61,9 @@ struct OSIxFSKitControl {
         let upper = try required(opts, "upper")
         let work = try required(opts, "work")
         let mode = opts["mode"] ?? "overlay"
+        try validateMountMode(mode)
+        try validateSourceDigest(sourceDigest)
+        try await requireReady(bundleID: bundleID, fileSystemType: fsType)
 
         try FileManager.default.createDirectory(atPath: target, withIntermediateDirectories: true)
         let mountOptions = [
@@ -76,6 +78,24 @@ struct OSIxFSKitControl {
         ].joined(separator: ",")
 
         try runProcess("/sbin/mount", ["-F", "-t", fsType, "-o", mountOptions, "osixfs", target])
+    }
+
+    static func validateMountMode(_ mode: String) throws {
+        guard mode == "overlay" || mode == "fuse" else {
+            throw usage("unsupported --mode \(mode)")
+        }
+    }
+
+    static func validateSourceDigest(_ digest: String) throws {
+        let prefix = "sha256:"
+        guard digest.hasPrefix(prefix) else {
+            throw usage("--source-digest must be a sha256 digest")
+        }
+        let hex = digest.dropFirst(prefix.count)
+        let hexDigits = CharacterSet(charactersIn: "0123456789abcdefABCDEF")
+        guard hex.count == 64, hex.unicodeScalars.allSatisfy({ hexDigits.contains($0) }) else {
+            throw usage("--source-digest must be a sha256 digest")
+        }
     }
 
     static func unmount(_ opts: [String: String]) throws {

@@ -92,4 +92,62 @@ xcrun swiftc \
   "${tmp}/volume/upper" \
   "${tmp}/volume/work"
 
+swift build --package-path "${repo_root}/macos/OSIxFSKit" -c release >/dev/null
+fskitctl="${repo_root}/macos/OSIxFSKit/.build/release/osix-fskitctl"
+valid_digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+if "${fskitctl}" mount \
+  --source-ref snap \
+  --source-digest "${valid_digest}" \
+  --workspace-root "${tmp}" \
+  --lower "${tmp}/volume/lower" \
+  --upper "${tmp}/volume/upper" \
+  --work "${tmp}/volume/work" \
+  2> "${tmp}/missing-target.err"; then
+  echo "osix-fskitctl accepted missing --target" >&2
+  exit 1
+elif [[ "$?" -ne 64 ]]; then
+  echo "osix-fskitctl missing --target returned unexpected status" >&2
+  cat "${tmp}/missing-target.err" >&2
+  exit 1
+fi
+grep -q "missing --target" "${tmp}/missing-target.err"
+
+if "${fskitctl}" mount \
+  --target "${tmp}/target" \
+  --source-ref snap \
+  --source-digest not-a-digest \
+  --workspace-root "${tmp}" \
+  --lower "${tmp}/volume/lower" \
+  --upper "${tmp}/volume/upper" \
+  --work "${tmp}/volume/work" \
+  2> "${tmp}/bad-digest.err"; then
+  echo "osix-fskitctl accepted malformed --source-digest" >&2
+  exit 1
+elif [[ "$?" -ne 64 ]]; then
+  echo "osix-fskitctl malformed --source-digest returned unexpected status" >&2
+  cat "${tmp}/bad-digest.err" >&2
+  exit 1
+fi
+grep -q -- "--source-digest must be a sha256 digest" "${tmp}/bad-digest.err"
+
+if "${fskitctl}" mount \
+  --target "${tmp}/target" \
+  --source-ref snap \
+  --source-digest "${valid_digest}" \
+  --workspace-root "${tmp}" \
+  --lower "${tmp}/volume/lower" \
+  --upper "${tmp}/volume/upper" \
+  --work "${tmp}/volume/work" \
+  --mode materialized \
+  2> "${tmp}/bad-mode.err"; then
+  echo "osix-fskitctl accepted unsupported --mode" >&2
+  exit 1
+elif [[ "$?" -ne 64 ]]; then
+  echo "osix-fskitctl unsupported --mode returned unexpected status" >&2
+  cat "${tmp}/bad-mode.err" >&2
+  exit 1
+fi
+grep -q "unsupported --mode materialized" "${tmp}/bad-mode.err"
+
 echo "FSKit dirty-index, metadata, and xattr smoke passed"
