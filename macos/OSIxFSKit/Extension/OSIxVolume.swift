@@ -686,7 +686,7 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
     }
 
     private func renameLowerCoveringDirectory(_ source: OSIxItem, destinationPath: String) throws {
-        let temporaryDestination = destinationPath + ".osix-rename-" + UUID().uuidString
+        let temporaryDestination = try stagingPath(kind: "rename")
         do {
             try materializeVisibleDirectory(source, to: temporaryDestination)
             if itemExists(at: destinationPath) {

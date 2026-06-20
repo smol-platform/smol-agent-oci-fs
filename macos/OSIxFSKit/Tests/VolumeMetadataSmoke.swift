@@ -1222,7 +1222,7 @@ struct VolumeMetadataSmoke {
         guard stagingMode == 0o700 else {
             throw SmokeError(String(format: "FSKit staging directory mode is %04o, want 0700", stagingMode))
         }
-        guard !dirty.paths.keys.contains(where: { $0.contains(".osix-stash-") || $0.contains(".osix-backup-") || $0.contains(".osix-hidden-") }) else {
+        guard !dirty.paths.keys.contains(where: { $0.contains(".osix-stash-") || $0.contains(".osix-backup-") || $0.contains(".osix-hidden-") || $0.contains(".osix-rename-") }) else {
             throw SmokeError("dirty index leaked internal FSKit staging path")
         }
         guard dirty.paths[relativePath] == "modified" else {
