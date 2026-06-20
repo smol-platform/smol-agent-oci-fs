@@ -137,11 +137,17 @@ struct OSIxMountOptions {
                 continue
             }
             let key = String(pair[0].dropFirst("osix.".count))
-            values[key] = decodeBase64URL(pair[1])
+            if let decoded = decodeBase64URL(pair[1]) {
+                values[key] = decoded
+            }
         }
     }
 
-    private static func decodeBase64URL(_ value: String) -> String {
+    private static func decodeBase64URL(_ value: String) -> String? {
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
+        guard !value.isEmpty, value.unicodeScalars.allSatisfy({ allowed.contains($0) }) else {
+            return nil
+        }
         var base64 = value
             .replacingOccurrences(of: "-", with: "+")
             .replacingOccurrences(of: "_", with: "/")
@@ -151,7 +157,7 @@ struct OSIxMountOptions {
         }
         guard let data = Data(base64Encoded: base64),
               let decoded = String(data: data, encoding: .utf8) else {
-            return value
+            return nil
         }
         return decoded
     }

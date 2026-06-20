@@ -1142,6 +1142,24 @@ struct VolumeMetadataSmoke {
         }
         try parsed.validateForMount()
 
+        let malformedEncoded = OSIxMountOptions.parseTaskOptions([
+            "-o",
+            [
+                "osix.workspace=not@@base64",
+                "osix.source_ref=" + encodeMountOption("snap-000001"),
+                "osix.source_digest=" + encodeMountOption(validDigest),
+                "osix.lower=" + encodeMountOption(lower),
+                "osix.upper=" + encodeMountOption(upper),
+                "osix.work=" + encodeMountOption(work),
+                "osix.mode=" + encodeMountOption("overlay"),
+            ].joined(separator: ","),
+        ])
+        do {
+            try malformedEncoded.validateForMount()
+            throw SmokeError("mount options accepted malformed encoded workspace option")
+        } catch is OSIxMountOptionsValidationError {
+        }
+
         try OSIxMountOptions(
             bundle: nil,
             workspace: workspace,
