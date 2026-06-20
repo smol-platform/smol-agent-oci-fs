@@ -754,6 +754,17 @@ struct VolumeMetadataSmoke {
         guard (try? String(contentsOfFile: upperWriteFile, encoding: .utf8)) == "wrXXe" else {
             throw SmokeError("negative-offset write mutated upper file")
         }
+        try? FileManager.default.removeItem(atPath: dirtyFile)
+        try FileManager.default.createDirectory(atPath: dirtyFile, withIntermediateDirectories: false)
+        do {
+            try writeData(volume: volume, data: Data("YY".utf8), item: writeItem, offset: 0)
+            throw SmokeError("write succeeded despite dirty flush failure")
+        } catch let error as NSError where error.domain == NSPOSIXErrorDomain || error.domain == NSCocoaErrorDomain {
+        }
+        try FileManager.default.removeItem(atPath: dirtyFile)
+        guard (try? String(contentsOfFile: upperWriteFile, encoding: .utf8)) == "wrXXe" else {
+            throw SmokeError("failed write flush rollback did not restore upper file contents")
+        }
         let cowDelete = OSIxItem(relativePath: cowDeletePath, physicalPath: lowerCOWDeleteFile, type: .file, source: .lower)
         let cowDeleteRequest = FSItem.SetAttributesRequest()
         cowDeleteRequest.mode = 0o600

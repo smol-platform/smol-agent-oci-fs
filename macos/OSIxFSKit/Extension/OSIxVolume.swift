@@ -650,13 +650,29 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
             guard current.type == .file else {
                 throw posixError(current.type == .directory ? EISDIR : EINVAL)
             }
-            let path = try ensureUpperFile(for: current)
-            let handle = try FileHandle(forWritingTo: URL(fileURLWithPath: path))
-            try handle.seek(toOffset: UInt64(offset))
-            try handle.write(contentsOf: contents)
-            try handle.close()
-            try flushDirtyIndex()
-            reply(contents.count, nil)
+            let existingUpperParent = nearestExistingUpperParent(for: current.relativePath)
+            let upperBackup = try backupUpperItem(current.relativePath)
+            var preparedUpperFile = false
+            do {
+                let path = try ensureUpperFile(for: current)
+                preparedUpperFile = true
+                let handle = try FileHandle(forWritingTo: URL(fileURLWithPath: path))
+                try handle.seek(toOffset: UInt64(offset))
+                try handle.write(contentsOf: contents)
+                try handle.close()
+                try flushDirtyIndex()
+                try discardStashedHiddenUpperItem(upperBackup)
+                reply(contents.count, nil)
+            } catch {
+                if preparedUpperFile {
+                    if upperBackup != nil {
+                        try restoreStashedHiddenUpperItem(upperBackup)
+                    } else {
+                        removeCreatedUpperItemAndEmptyParents(current.relativePath, stoppingAt: existingUpperParent)
+                    }
+                }
+                throw error
+            }
         } catch {
             reply(0, error)
         }
@@ -997,6 +1013,19 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
         }
         let stashedPath = target + ".osix-stash-" + UUID().uuidString
         try fileManager.moveItem(atPath: target, toPath: stashedPath)
+        return StashedHiddenUpperItem(originalPath: target, stashedPath: stashedPath)
+    }
+
+    private func backupUpperItem(_ relativePath: String) throws -> StashedHiddenUpperItem? {
+        guard let upper = mountOptions?.upper else {
+            return nil
+        }
+        let target = upperPath(upper, relativePath)
+        guard itemExists(at: target) else {
+            return nil
+        }
+        let stashedPath = target + ".osix-backup-" + UUID().uuidString
+        try fileManager.copyItem(atPath: target, toPath: stashedPath)
         return StashedHiddenUpperItem(originalPath: target, stashedPath: stashedPath)
     }
 
