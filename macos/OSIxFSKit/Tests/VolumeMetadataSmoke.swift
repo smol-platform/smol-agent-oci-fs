@@ -1054,6 +1054,20 @@ struct VolumeMetadataSmoke {
         }
 
         do {
+            try OSIxMountOptions(bundle: nil, workspace: work, sourceRef: "snap-000001", sourceDigest: validDigest, lower: lower, upper: lower, work: work, mode: "overlay").validateForMount()
+            throw SmokeError("mount options accepted aliased lower and upper directories")
+        } catch is OSIxMountOptionsValidationError {
+        }
+
+        let nestedWork = URL(fileURLWithPath: upper).appendingPathComponent("nested-work").path
+        try FileManager.default.createDirectory(atPath: nestedWork, withIntermediateDirectories: true)
+        do {
+            try OSIxMountOptions(bundle: nil, workspace: work, sourceRef: "snap-000001", sourceDigest: validDigest, lower: lower, upper: upper, work: nestedWork, mode: "overlay").validateForMount()
+            throw SmokeError("mount options accepted nested upper/work directories")
+        } catch is OSIxMountOptionsValidationError {
+        }
+
+        do {
             try OSIxMountOptions(bundle: nil, workspace: work, sourceRef: "snap-000001", sourceDigest: "sha256:digest", lower: lower, upper: upper, work: work, mode: "materialized").validateForMount()
             throw SmokeError("mount options accepted unsupported mode")
         } catch is OSIxMountOptionsValidationError {

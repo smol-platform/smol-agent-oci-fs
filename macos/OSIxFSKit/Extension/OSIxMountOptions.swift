@@ -54,6 +54,7 @@ struct OSIxMountOptions {
         try validateDirectory(path: lower!, option: "osix.lower")
         try validateDirectory(path: upper!, option: "osix.upper")
         try validateDirectory(path: work!, option: "osix.work")
+        try validateRuntimeDirectoriesAreDisjoint()
         try validateSourceDigest(sourceDigest!)
     }
 
@@ -65,6 +66,31 @@ struct OSIxMountOptions {
         guard statBuffer.st_mode & S_IFMT == S_IFDIR else {
             throw OSIxMountOptionsValidationError(description: "\(option) \(path) is not a directory")
         }
+    }
+
+    private func validateRuntimeDirectoriesAreDisjoint() throws {
+        let directories = [
+            ("osix.lower", canonicalPath(lower!)),
+            ("osix.upper", canonicalPath(upper!)),
+            ("osix.work", canonicalPath(work!)),
+        ]
+        for index in directories.indices {
+            for otherIndex in directories.indices where otherIndex > index {
+                let current = directories[index]
+                let other = directories[otherIndex]
+                if current.1 == other.1 || isNestedPath(current.1, under: other.1) || isNestedPath(other.1, under: current.1) {
+                    throw OSIxMountOptionsValidationError(description: "\(current.0) and \(other.0) must be separate directories")
+                }
+            }
+        }
+    }
+
+    private func canonicalPath(_ path: String) -> String {
+        URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
+    }
+
+    private func isNestedPath(_ path: String, under parent: String) -> Bool {
+        path.hasPrefix(parent.hasSuffix("/") ? parent : parent + "/")
     }
 
     private func validateSourceDigest(_ digest: String) throws {
