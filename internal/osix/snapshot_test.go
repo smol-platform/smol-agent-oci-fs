@@ -371,12 +371,51 @@ func TestExtractLayerRejectsMalformedWhiteout(t *testing.T) {
 	assertFile(t, filepath.Join(restore, "agent", "workspace", "keep.txt"), "keep\n")
 }
 
+func TestExtractLayerRejectsWhiteoutThroughSymlinkParent(t *testing.T) {
+	restore := t.TempDir()
+	outside := t.TempDir()
+	mustWrite(t, filepath.Join(outside, "owned.txt"), "outside\n")
+	layer := rawLayer(t, func(tw *tar.Writer) {
+		if err := tw.WriteHeader(&tar.Header{
+			Name:     "agent/workspace/link",
+			Typeflag: tar.TypeSymlink,
+			Linkname: outside,
+			Mode:     0o777,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := tw.WriteHeader(&tar.Header{
+			Name:     "agent/workspace/link/.wh.owned.txt",
+			Typeflag: tar.TypeReg,
+			Mode:     0,
+			Size:     0,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	err := extractLayer(layer, restore)
+	if err == nil || !strings.Contains(err.Error(), "refusing to extract through symlink") {
+		t.Fatalf("expected symlink whiteout parent error, got %v", err)
+	}
+	assertFile(t, filepath.Join(outside, "owned.txt"), "outside\n")
+}
+
 func TestExtractLayerAppliesValidWhiteout(t *testing.T) {
 	restore := t.TempDir()
 	mustWrite(t, filepath.Join(restore, "agent", "workspace", "remove.txt"), "remove\n")
+	mustWrite(t, filepath.Join(restore, "agent", "workspace", "nested", "remove.txt"), "remove nested\n")
 	layer := rawLayer(t, func(tw *tar.Writer) {
 		if err := tw.WriteHeader(&tar.Header{
 			Name:     "agent/workspace/.wh.remove.txt",
+			Typeflag: tar.TypeReg,
+			Mode:     0,
+			Size:     0,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := tw.WriteHeader(&tar.Header{
+			Name:     "agent/workspace/nested/.wh.remove.txt",
 			Typeflag: tar.TypeReg,
 			Mode:     0,
 			Size:     0,
@@ -389,6 +428,7 @@ func TestExtractLayerAppliesValidWhiteout(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertMissing(t, filepath.Join(restore, "agent", "workspace", "remove.txt"))
+	assertMissing(t, filepath.Join(restore, "agent", "workspace", "nested", "remove.txt"))
 }
 
 func TestAgeEncryptedSnapshotRestore(t *testing.T) {

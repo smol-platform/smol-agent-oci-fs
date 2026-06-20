@@ -1063,7 +1063,11 @@ func applyWhiteout(root, whiteout string) error {
 		strings.ContainsAny(targetName, `/\`) {
 		return fmt.Errorf("invalid whiteout %q", whiteout)
 	}
-	return os.RemoveAll(filepath.Join(root, dir, targetName))
+	parent := filepath.Join(root, dir)
+	if err := ensureNoSymlinkInPath(root, parent); err != nil {
+		return err
+	}
+	return os.RemoveAll(filepath.Join(parent, targetName))
 }
 
 func digestTree(entries []TreeEntry) string {
