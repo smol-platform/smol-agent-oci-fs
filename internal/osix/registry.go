@@ -2,12 +2,15 @@ package osix
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"path"
+	"path/filepath"
 	"strings"
 )
 
@@ -60,7 +63,7 @@ func PushSnapshot(workspaceRoot, remoteRepo, ref string, extraTags []string) err
 	if err != nil {
 		return err
 	}
-	client := registryClient{base: registryBaseURL(remote.Registry), repo: remote.Repo, http: http.DefaultClient}
+	client := newRegistryClient(remote.Registry, remote.Repo)
 	chain, err := s.snapshotChainWithDigests(digest)
 	if err != nil {
 		return err
@@ -111,7 +114,7 @@ func PullSnapshot(workspaceRoot, remoteRef, localTag string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	client := registryClient{base: registryBaseURL(ref.Registry), repo: ref.Repo, http: http.DefaultClient}
+	client := newRegistryClient(ref.Registry, ref.Repo)
 	digest, err := pullManifestRecursive(s, client, ref.Reference)
 	if err != nil {
 		return "", err
@@ -211,9 +214,29 @@ func isLocalRegistry(registry string) bool {
 }
 
 type registryClient struct {
-	base string
-	repo string
-	http *http.Client
+	registry     string
+	base         string
+	repo         string
+	http         *http.Client
+	auth         registryCredentials
+	bearerTokens map[string]string
+}
+
+type registryCredentials struct {
+	Username string
+	Password string
+	Token    string
+}
+
+func newRegistryClient(registry, repo string) registryClient {
+	return registryClient{
+		registry:     registry,
+		base:         registryBaseURL(registry),
+		repo:         repo,
+		http:         http.DefaultClient,
+		auth:         loadRegistryCredentials(registry),
+		bearerTokens: map[string]string{},
+	}
 }
 
 func (c registryClient) putBlob(digest string, data []byte) error {
@@ -225,7 +248,7 @@ func (c registryClient) putBlob(digest string, data []byte) error {
 	if err != nil {
 		return err
 	}
-	resp, err := c.http.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return err
 	}
@@ -254,7 +277,7 @@ func (c registryClient) putBlob(digest string, data []byte) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/octet-stream")
-	resp, err = c.http.Do(req)
+	resp, err = c.do(req)
 	if err != nil {
 		return err
 	}
@@ -271,7 +294,7 @@ func (c registryClient) ensureBlobAbsentOrPresent(digest string) error {
 	if err != nil {
 		return err
 	}
-	resp, err := c.http.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return err
 	}
@@ -288,7 +311,7 @@ func (c registryClient) getBlob(digest string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	resp, err := c.http.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -313,7 +336,7 @@ func (c registryClient) putManifest(ref string, data []byte) error {
 		return err
 	}
 	req.Header.Set("Content-Type", MediaTypeOCIManifest)
-	resp, err := c.http.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return err
 	}
@@ -331,7 +354,7 @@ func (c registryClient) getManifest(ref string) ([]byte, string, error) {
 		return nil, "", err
 	}
 	req.Header.Set("Accept", MediaTypeOCIManifest)
-	resp, err := c.http.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return nil, "", err
 	}
@@ -376,4 +399,229 @@ func (c registryClient) resolveLocation(location string) (string, error) {
 		return "", err
 	}
 	return base.ResolveReference(u).String(), nil
+}
+
+func (c registryClient) do(req *http.Request) (*http.Response, error) {
+	resp, err := c.doWithAuth(req, "")
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		return resp, nil
+	}
+	challenge := resp.Header.Get("WWW-Authenticate")
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	token, err := c.bearerToken(challenge)
+	if err != nil {
+		return nil, err
+	}
+	if token == "" {
+		return resp, nil
+	}
+	return c.doWithAuth(req, token)
+}
+
+func (c registryClient) doWithAuth(req *http.Request, bearerToken string) (*http.Response, error) {
+	next := req.Clone(req.Context())
+	if req.GetBody != nil && req.Body != nil {
+		body, err := req.GetBody()
+		if err != nil {
+			return nil, err
+		}
+		next.Body = body
+	}
+	if bearerToken != "" {
+		next.Header.Set("Authorization", "Bearer "+bearerToken)
+	} else if c.auth.Token != "" {
+		next.Header.Set("Authorization", "Bearer "+c.auth.Token)
+	} else if c.auth.Username != "" || c.auth.Password != "" {
+		next.SetBasicAuth(c.auth.Username, c.auth.Password)
+	}
+	return c.http.Do(next)
+}
+
+func (c registryClient) bearerToken(challenge string) (string, error) {
+	scheme, params := parseAuthChallenge(challenge)
+	if !strings.EqualFold(scheme, "Bearer") {
+		return "", nil
+	}
+	if token := c.bearerTokens[challenge]; token != "" {
+		return token, nil
+	}
+	realm := params["realm"]
+	if realm == "" {
+		return "", fmt.Errorf("registry requested bearer auth without token realm")
+	}
+	u, err := url.Parse(realm)
+	if err != nil {
+		return "", fmt.Errorf("parse bearer token realm: %w", err)
+	}
+	q := u.Query()
+	if service := params["service"]; service != "" {
+		q.Set("service", service)
+	}
+	if scope := params["scope"]; scope != "" {
+		q.Set("scope", scope)
+	}
+	u.RawQuery = q.Encode()
+	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
+	if err != nil {
+		return "", err
+	}
+	if c.auth.Username != "" || c.auth.Password != "" {
+		req.SetBasicAuth(c.auth.Username, c.auth.Password)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		io.Copy(io.Discard, resp.Body)
+		return "", fmt.Errorf("fetch bearer token for %s: %s", c.registry, resp.Status)
+	}
+	var payload struct {
+		Token       string `json:"token"`
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return "", fmt.Errorf("decode bearer token response: %w", err)
+	}
+	token := payload.Token
+	if token == "" {
+		token = payload.AccessToken
+	}
+	if token == "" {
+		return "", fmt.Errorf("bearer token response for %s did not include token", c.registry)
+	}
+	c.bearerTokens[challenge] = token
+	return token, nil
+}
+
+func parseAuthChallenge(header string) (string, map[string]string) {
+	header = strings.TrimSpace(header)
+	if header == "" {
+		return "", nil
+	}
+	scheme, rest, ok := strings.Cut(header, " ")
+	if !ok {
+		return header, map[string]string{}
+	}
+	params := map[string]string{}
+	for _, part := range splitChallengeParams(rest) {
+		key, value, ok := strings.Cut(part, "=")
+		if !ok {
+			continue
+		}
+		key = strings.ToLower(strings.TrimSpace(key))
+		value = strings.TrimSpace(value)
+		value = strings.Trim(value, `"`)
+		params[key] = value
+	}
+	return scheme, params
+}
+
+func splitChallengeParams(input string) []string {
+	var parts []string
+	var current strings.Builder
+	quoted := false
+	escaped := false
+	for _, r := range input {
+		switch {
+		case escaped:
+			current.WriteRune(r)
+			escaped = false
+		case r == '\\' && quoted:
+			escaped = true
+		case r == '"':
+			quoted = !quoted
+			current.WriteRune(r)
+		case r == ',' && !quoted:
+			if part := strings.TrimSpace(current.String()); part != "" {
+				parts = append(parts, part)
+			}
+			current.Reset()
+		default:
+			current.WriteRune(r)
+		}
+	}
+	if part := strings.TrimSpace(current.String()); part != "" {
+		parts = append(parts, part)
+	}
+	return parts
+}
+
+func loadRegistryCredentials(registry string) registryCredentials {
+	if token := strings.TrimSpace(os.Getenv("OSIX_REGISTRY_TOKEN")); token != "" {
+		return registryCredentials{Token: token}
+	}
+	user := os.Getenv("OSIX_REGISTRY_USERNAME")
+	password := os.Getenv("OSIX_REGISTRY_PASSWORD")
+	if user != "" || password != "" {
+		return registryCredentials{Username: user, Password: password}
+	}
+	return loadDockerConfigCredentials(registry)
+}
+
+func loadDockerConfigCredentials(registry string) registryCredentials {
+	path := dockerConfigPath()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return registryCredentials{}
+	}
+	var cfg struct {
+		Auths map[string]struct {
+			Auth          string `json:"auth"`
+			Username      string `json:"username"`
+			Password      string `json:"password"`
+			IdentityToken string `json:"identitytoken"`
+		} `json:"auths"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return registryCredentials{}
+	}
+	for _, key := range dockerConfigRegistryKeys(registry) {
+		entry, ok := cfg.Auths[key]
+		if !ok {
+			continue
+		}
+		if entry.IdentityToken != "" {
+			return registryCredentials{Token: entry.IdentityToken}
+		}
+		if entry.Username != "" || entry.Password != "" {
+			return registryCredentials{Username: entry.Username, Password: entry.Password}
+		}
+		if entry.Auth != "" {
+			decoded, err := base64.StdEncoding.DecodeString(entry.Auth)
+			if err != nil {
+				continue
+			}
+			username, password, ok := strings.Cut(string(decoded), ":")
+			if !ok {
+				continue
+			}
+			return registryCredentials{Username: username, Password: password}
+		}
+	}
+	return registryCredentials{}
+}
+
+func dockerConfigPath() string {
+	if dir := strings.TrimSpace(os.Getenv("DOCKER_CONFIG")); dir != "" {
+		return filepath.Join(dir, "config.json")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".docker", "config.json")
+}
+
+func dockerConfigRegistryKeys(registry string) []string {
+	return []string{
+		registry,
+		"https://" + registry,
+		"http://" + registry,
+	}
 }

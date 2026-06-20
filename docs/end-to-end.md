@@ -43,6 +43,23 @@ Start a local OCI registry such as Docker Distribution on `localhost:5000`, then
 ./osix restore localhost:5000/acme/research-agent:snap-000003 ./restored
 ```
 
+For authenticated registries, either export explicit OSIx credentials:
+
+```sh
+export OSIX_REGISTRY_USERNAME=robot
+export OSIX_REGISTRY_PASSWORD='...'
+```
+
+or log in with Docker-compatible tooling so `~/.docker/config.json` contains an
+entry for the target registry. `OSIX_REGISTRY_TOKEN` can be used when a registry
+or automation system provides a bearer token directly.
+
+To run the local Docker Distribution compatibility harness:
+
+```sh
+./scripts/test-registry-docker.sh
+```
+
 ## Encryption
 
 Age:

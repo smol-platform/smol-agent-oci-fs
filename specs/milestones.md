@@ -47,6 +47,7 @@ Deliverables:
 - Push blobs, config, and manifest.
 - Pull manifest, config, and layers.
 - Tag resolution and digest pinning.
+- Basic and Bearer-token registry authentication.
 - `mode=image` compatibility path.
 
 Acceptance criteria:
@@ -209,4 +210,3 @@ Acceptance criteria:
 - At least one registry works in `hybrid` mode.
 - At least one registry works in `image` fallback mode.
 - Known limitations are documented, including tag atomicity and encrypted lazy reads.
-

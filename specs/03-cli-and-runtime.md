@@ -104,6 +104,12 @@ remote reference is a tag, the local tag defaults to the same name unless
 `--tag` overrides it. Digest pulls preserve immutable identity without creating
 a mutable local tag unless requested.
 
+Push and pull clients SHOULD discover credentials from explicit OSIx
+environment variables first, then Docker-compatible registry auth config. The
+client MUST keep credentials out of snapshot manifests, refs, logs, and local
+content blobs. v0 supports Basic credentials and Bearer token challenges from
+the OCI registry `WWW-Authenticate` response.
+
 ### Watch
 
 ```text

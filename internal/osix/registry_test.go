@@ -1,12 +1,14 @@
 package osix
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -82,6 +84,67 @@ func TestPushPullSnapshotThroughOCIRegistry(t *testing.T) {
 	}
 }
 
+func TestPushPullSnapshotThroughBearerAuthRegistry(t *testing.T) {
+	reg := newAuthFakeRegistry()
+	server := httptest.NewServer(reg)
+	defer server.Close()
+	reg.realm = server.URL + "/token"
+	u, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := u.Host + "/acme/private-agent-state"
+	t.Setenv("OSIX_REGISTRY_USERNAME", "robot")
+	t.Setenv("OSIX_REGISTRY_PASSWORD", "secret")
+
+	source := t.TempDir()
+	if _, err := Init(source, InitOptions{
+		Base:          "example/base:latest",
+		Name:          "agent",
+		StateRef:      repo,
+		Mount:         filepath.Join(source, "agentfs"),
+		DefaultBranch: "main",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fs := filepath.Join(source, "agentfs")
+	mustWrite(t, filepath.Join(fs, "agent", "workspace", "private.md"), "private\n")
+	snap, err := Snapshot(source, fs, SnapshotOptions{Tag: "snap-private", AlsoTag: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := PushSnapshot(source, repo, "main", []string{"release"}); err != nil {
+		t.Fatal(err)
+	}
+
+	dest := t.TempDir()
+	if _, err := Init(dest, InitOptions{
+		Base:          "example/base:latest",
+		Name:          "agent",
+		StateRef:      repo,
+		Mount:         filepath.Join(dest, "agentfs"),
+		DefaultBranch: "main",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	pulled, err := PullSnapshot(dest, repo+":release", "release")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pulled != snap.ManifestDigest {
+		t.Fatalf("pulled digest mismatch: want %s got %s", snap.ManifestDigest, pulled)
+	}
+	if reg.tokenRequests == 0 {
+		t.Fatal("expected bearer token endpoint to be used")
+	}
+	if reg.basicTokenRequests == 0 {
+		t.Fatal("expected token request to include basic credentials")
+	}
+	if reg.bearerRegistryRequests == 0 {
+		t.Fatal("expected registry requests to retry with bearer token")
+	}
+}
+
 func hasRef(refs []Ref, name string) bool {
 	for _, ref := range refs {
 		if ref.Name == name {
@@ -96,6 +159,54 @@ type fakeRegistry struct {
 	manifests map[string][]byte
 	uploads   map[string]string
 	nextID    int
+}
+
+type authFakeRegistry struct {
+	inner                  *fakeRegistry
+	realm                  string
+	tokenRequests          int
+	basicTokenRequests     int
+	bearerRegistryRequests int
+}
+
+func newAuthFakeRegistry() *authFakeRegistry {
+	return &authFakeRegistry{inner: newFakeRegistry()}
+}
+
+func (r *authFakeRegistry) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	if req.URL.Path == "/token" {
+		r.handleToken(w, req)
+		return
+	}
+	if !strings.HasPrefix(req.URL.Path, "/v2/") {
+		http.NotFound(w, req)
+		return
+	}
+	if req.Header.Get("Authorization") != "Bearer registry-token" {
+		w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer realm="%s",service="osix-test",scope="repository:acme/private-agent-state:pull,push"`, r.realm))
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	r.bearerRegistryRequests++
+	r.inner.ServeHTTP(w, req)
+}
+
+func (r *authFakeRegistry) handleToken(w http.ResponseWriter, req *http.Request) {
+	r.tokenRequests++
+	want := "Basic " + base64.StdEncoding.EncodeToString([]byte("robot:secret"))
+	if req.Header.Get("Authorization") == want {
+		r.basicTokenRequests++
+	}
+	if req.URL.Query().Get("service") != "osix-test" {
+		http.Error(w, "missing service", http.StatusBadRequest)
+		return
+	}
+	if req.URL.Query().Get("scope") != "repository:acme/private-agent-state:pull,push" {
+		http.Error(w, "missing scope", http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(`{"token":"registry-token"}`))
 }
 
 func newFakeRegistry() *fakeRegistry {
@@ -268,5 +379,27 @@ func TestRegistryBaseURL(t *testing.T) {
 		if got := registryBaseURL(input); got != want {
 			t.Fatalf("%s: want %s got %s", input, want, got)
 		}
+	}
+}
+
+func TestLoadDockerConfigCredentials(t *testing.T) {
+	dockerConfig := t.TempDir()
+	t.Setenv("DOCKER_CONFIG", dockerConfig)
+	t.Setenv("OSIX_REGISTRY_USERNAME", "")
+	t.Setenv("OSIX_REGISTRY_PASSWORD", "")
+	t.Setenv("OSIX_REGISTRY_TOKEN", "")
+	auth := base64.StdEncoding.EncodeToString([]byte("robot:secret"))
+	config := fmt.Sprintf(`{"auths":{"ghcr.io":{"auth":%q},"registry.example.io":{"identitytoken":"bearer-token"}}}`, auth)
+	if err := os.WriteFile(filepath.Join(dockerConfig, "config.json"), []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	basic := loadRegistryCredentials("ghcr.io")
+	if basic.Username != "robot" || basic.Password != "secret" || basic.Token != "" {
+		t.Fatalf("unexpected basic credentials: %#v", basic)
+	}
+	bearer := loadRegistryCredentials("registry.example.io")
+	if bearer.Token != "bearer-token" || bearer.Username != "" || bearer.Password != "" {
+		t.Fatalf("unexpected bearer credentials: %#v", bearer)
 	}
 }

@@ -62,6 +62,12 @@ For registry-backed use, initialize with a registry repository:
 ./osix restore localhost:5000/acme/research-agent-a:snap-000001 restored
 ```
 
+Registry credentials are discovered from `OSIX_REGISTRY_TOKEN`,
+`OSIX_REGISTRY_USERNAME`/`OSIX_REGISTRY_PASSWORD`, or Docker
+`config.json` auth entries under `DOCKER_CONFIG` or `~/.docker/config.json`.
+The client handles Basic credentials and Bearer `WWW-Authenticate` token
+challenges for push and pull requests.
+
 Encrypted snapshots:
 
 ```sh
