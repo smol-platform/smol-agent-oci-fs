@@ -2,6 +2,8 @@ import Darwin
 import Foundation
 import FSKit
 
+private let opaqueWhiteoutName = ".wh..wh..opq"
+
 @objc
 final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperations, FSVolume.XattrOperations {
     private let fileManager = FileManager.default
@@ -852,7 +854,7 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
         }
         if let lower = mountOptions?.lower {
             let lowerCandidate = upperPath(lower, normalized)
-            if let type = itemType(at: lowerCandidate) {
+            if let type = itemType(at: lowerCandidate), !isCoveredByOpaqueUpperDirectory(normalized) {
                 return OSIxItem(relativePath: normalized, physicalPath: lowerCandidate, type: type, source: .lower)
             }
         }
@@ -890,14 +892,21 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
         if applyingWhiteouts {
             for name in names where name.hasPrefix(".wh.") {
                 names.remove(name)
-                names.remove(String(name.dropFirst(".wh.".count)))
+                if name != opaqueWhiteoutName {
+                    names.remove(String(name.dropFirst(".wh.".count)))
+                }
             }
         } else if let upper = mountOptions?.upper {
             let relative = relativePathFromRoot(path, root: mountOptions?.lower ?? "")
             let upperDir = upperPath(upper, relative)
+            if fileManager.fileExists(atPath: upperPath(upperDir, opaqueWhiteoutName)) {
+                return []
+            }
             let whiteouts = try? fileManager.contentsOfDirectory(atPath: upperDir).filter { $0.hasPrefix(".wh.") }
             for whiteout in whiteouts ?? [] {
-                names.remove(String(whiteout.dropFirst(".wh.".count)))
+                if whiteout != opaqueWhiteoutName {
+                    names.remove(String(whiteout.dropFirst(".wh.".count)))
+                }
             }
         }
         names.remove(".")
@@ -1158,6 +1167,24 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
         return false
     }
 
+    private func isCoveredByOpaqueUpperDirectory(_ relativePath: String) -> Bool {
+        let normalized = normalizeRelativePath(relativePath)
+        guard !normalized.isEmpty, let upper = mountOptions?.upper else {
+            return false
+        }
+        var candidate = parentPath(normalized)
+        while true {
+            if fileManager.fileExists(atPath: upperPath(upperPath(upper, candidate), opaqueWhiteoutName)) {
+                return true
+            }
+            if candidate.isEmpty {
+                break
+            }
+            candidate = parentPath(candidate)
+        }
+        return false
+    }
+
     private func itemType(at path: String) -> FSItem.ItemType? {
         var statBuffer = stat()
         guard lstat(path, &statBuffer) == 0 else {
@@ -1213,7 +1240,7 @@ private func parseXattrNames(buffer: [CChar], count: Int) -> [FSFileName] {
 }
 
 final class OSIxItem: FSItem {
-    enum Source {
+    enum Source: Equatable {
         case upper
         case lower
         case synthetic

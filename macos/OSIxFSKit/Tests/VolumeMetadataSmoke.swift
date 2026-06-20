@@ -57,6 +57,9 @@ struct VolumeMetadataSmoke {
         let emptySymlinkDirectoryPath = "agent/empty-symlink-dir"
         let staleTypeDirectoryPath = "agent/stale-type-dir"
         let removedDirectoryPath = "agent/removed"
+        let opaqueDirectoryPath = "agent/opaque"
+        let opaqueHiddenChildPath = "agent/opaque/lower-only.txt"
+        let opaqueUpperChildPath = "agent/opaque/upper-only.txt"
         let nonEmptyLowerDirectoryPath = "agent/non-empty-lower"
         let nonEmptyUpperDirectoryPath = "agent/non-empty-upper"
         let xattrDirectoryPath = "agent/xattr-dir"
@@ -105,6 +108,8 @@ struct VolumeMetadataSmoke {
         let lowerStaleTypeDirectory = URL(fileURLWithPath: lower).appendingPathComponent(staleTypeDirectoryPath).path
         let lowerRemovedDirectory = URL(fileURLWithPath: lower).appendingPathComponent(removedDirectoryPath).path
         let lowerRemovedFile = URL(fileURLWithPath: lower).appendingPathComponent(removedDirectoryPath + "/stale.txt").path
+        let lowerOpaqueDirectory = URL(fileURLWithPath: lower).appendingPathComponent(opaqueDirectoryPath).path
+        let lowerOpaqueHiddenChild = URL(fileURLWithPath: lower).appendingPathComponent(opaqueHiddenChildPath).path
         let lowerNonEmptyDirectory = URL(fileURLWithPath: lower).appendingPathComponent(nonEmptyLowerDirectoryPath).path
         let lowerNonEmptyFile = URL(fileURLWithPath: lower).appendingPathComponent(nonEmptyLowerDirectoryPath + "/child.txt").path
         let lowerXattrDirectory = URL(fileURLWithPath: lower).appendingPathComponent(xattrDirectoryPath).path
@@ -118,6 +123,9 @@ struct VolumeMetadataSmoke {
         let upperNonEmptyFile = URL(fileURLWithPath: upper).appendingPathComponent(nonEmptyUpperDirectoryPath + "/child.txt").path
         let upperNonEmptyLowerWhiteout = URL(fileURLWithPath: upper).appendingPathComponent("agent/.wh.non-empty-lower").path
         let upperXattrDirectory = URL(fileURLWithPath: upper).appendingPathComponent(xattrDirectoryPath).path
+        let upperOpaqueDirectory = URL(fileURLWithPath: upper).appendingPathComponent(opaqueDirectoryPath).path
+        let upperOpaqueMarker = URL(fileURLWithPath: upper).appendingPathComponent(opaqueDirectoryPath + "/.wh..wh..opq").path
+        let upperOpaqueChild = URL(fileURLWithPath: upper).appendingPathComponent(opaqueUpperChildPath).path
         let upperFile = URL(fileURLWithPath: upper).appendingPathComponent(relativePath).path
         let upperDeleteWhiteout = URL(fileURLWithPath: upper).appendingPathComponent("agent/workspace/.wh.delete-me.txt").path
         let upperRenameDestination = URL(fileURLWithPath: upper).appendingPathComponent(staleRenameDestinationPath).path
@@ -255,12 +263,17 @@ struct VolumeMetadataSmoke {
         try FileManager.default.createDirectory(atPath: lowerStaleTypeDirectory, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(atPath: URL(fileURLWithPath: lowerRemovedFile).deletingLastPathComponent().path, withIntermediateDirectories: true)
         try Data("stale".utf8).write(to: URL(fileURLWithPath: lowerRemovedFile))
+        try FileManager.default.createDirectory(atPath: lowerOpaqueDirectory, withIntermediateDirectories: true)
+        try Data("opaque lower child".utf8).write(to: URL(fileURLWithPath: lowerOpaqueHiddenChild))
         try FileManager.default.createDirectory(atPath: URL(fileURLWithPath: lowerNonEmptyFile).deletingLastPathComponent().path, withIntermediateDirectories: true)
         try Data("lower child".utf8).write(to: URL(fileURLWithPath: lowerNonEmptyFile))
         try FileManager.default.createDirectory(atPath: lowerXattrDirectory, withIntermediateDirectories: true)
         try setRawXattr(path: lowerXattrDirectory, name: "osix.policy", value: Data("lower".utf8), options: 0)
         try FileManager.default.createDirectory(atPath: URL(fileURLWithPath: upperNonEmptyFile).deletingLastPathComponent().path, withIntermediateDirectories: true)
         try Data("upper child".utf8).write(to: URL(fileURLWithPath: upperNonEmptyFile))
+        try FileManager.default.createDirectory(atPath: upperOpaqueDirectory, withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: upperOpaqueMarker, contents: Data())
+        try Data("opaque upper child".utf8).write(to: URL(fileURLWithPath: upperOpaqueChild))
         try Data("remove flush rollback upper".utf8).write(to: URL(fileURLWithPath: upperRemoveFlushRollbackFile))
         try FileManager.default.createDirectory(atPath: upperExistingParentXattrDirectory, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(atPath: URL(fileURLWithPath: upperRenameOverUpperDirectoryDestinationFile).deletingLastPathComponent().path, withIntermediateDirectories: true)
@@ -456,6 +469,29 @@ struct VolumeMetadataSmoke {
         }
         guard !FileManager.default.fileExists(atPath: upperStaleCreate) else {
             throw SmokeError("createItem wrote into a stale whiteouted lower directory")
+        }
+        let opaqueDirectory = try lookupItem(volume: volume, name: FSFileName(string: "opaque"), directory: workspaceItem(lower: lower, relativePath: "agent"))
+        guard let opaqueDirectoryItem = opaqueDirectory as? OSIxItem,
+              opaqueDirectoryItem.source == .upper,
+              opaqueDirectoryItem.type == .directory else {
+            throw SmokeError("opaque upper directory did not cover lower directory")
+        }
+        let opaqueLowerChild = OSIxItem(relativePath: opaqueHiddenChildPath, physicalPath: lowerOpaqueHiddenChild, type: .file, source: .lower)
+        do {
+            _ = try getAttributes(volume: volume, item: opaqueLowerChild)
+            throw SmokeError("lower child under opaque upper directory remained visible")
+        } catch let error as NSError where error.domain == NSPOSIXErrorDomain && error.code == Int(ENOENT) {
+        }
+        do {
+            _ = try lookupItem(volume: volume, name: FSFileName(string: "lower-only.txt"), directory: opaqueDirectory)
+            throw SmokeError("lookupItem exposed lower child under opaque upper directory")
+        } catch let error as NSError where error.domain == NSPOSIXErrorDomain && error.code == Int(ENOENT) {
+        }
+        let opaqueUpperChild = try lookupItem(volume: volume, name: FSFileName(string: "upper-only.txt"), directory: opaqueDirectory)
+        guard let opaqueUpperChildItem = opaqueUpperChild as? OSIxItem,
+              opaqueUpperChildItem.source == .upper,
+              (try? String(contentsOfFile: upperOpaqueChild, encoding: .utf8)) == "opaque upper child" else {
+            throw SmokeError("opaque upper directory hid its own upper child")
         }
         try? FileManager.default.removeItem(atPath: dirtyFile)
         try FileManager.default.createDirectory(atPath: dirtyFile, withIntermediateDirectories: false)

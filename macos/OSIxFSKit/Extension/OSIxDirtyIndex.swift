@@ -2,6 +2,8 @@ import CryptoKit
 import Darwin
 import Foundation
 
+private let opaqueWhiteoutName = ".wh..wh..opq"
+
 struct OSIxDirtyIndex {
     let dirtyBytes: Int64
     let paths: [String: String]
@@ -33,11 +35,23 @@ struct OSIxDirtyIndex {
 
             let whiteoutedNames = Set(children.compactMap { url -> String? in
                 let name = url.lastPathComponent
-                guard name.hasPrefix(".wh."), name != ".wh..wh..opq" else {
+                guard name.hasPrefix(".wh."), name != opaqueWhiteoutName else {
                     return nil
                 }
                 return String(name.dropFirst(".wh.".count))
             })
+            let upperNames = Set(children.compactMap { url -> String? in
+                let name = url.lastPathComponent
+                return name.hasPrefix(".wh.") ? nil : name
+            })
+            if children.contains(where: { $0.lastPathComponent == opaqueWhiteoutName }) {
+                for relativePath in parentTree.keys where parentPath(relativePath) == relativeBase {
+                    let name = relativePath.split(separator: "/").last.map(String.init) ?? ""
+                    if !upperNames.contains(name), !whiteoutedNames.contains(name) {
+                        paths[relativePath] = "deleted"
+                    }
+                }
+            }
 
             for url in children {
                 let path = url.standardizedFileURL.path
@@ -46,7 +60,10 @@ struct OSIxDirtyIndex {
                     continue
                 }
                 let name = url.lastPathComponent
-                if name.hasPrefix(".wh."), name != ".wh..wh..opq" {
+                if name == opaqueWhiteoutName {
+                    continue
+                }
+                if name.hasPrefix(".wh.") {
                     let target = joinRelative(parentPath(relativePath), String(name.dropFirst(".wh.".count)))
                     paths[target] = "deleted"
                     continue
