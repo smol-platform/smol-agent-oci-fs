@@ -792,9 +792,10 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
             let data = try handle.read(upToCount: length) ?? Data()
             try handle.close()
             handleClosed = true
-            let rawBuffer = unsafeBitCast(buffer, to: OSIxMutableFileDataBuffer.self).mutableBytes()
             let copyCount = min(data.count, buffer.length)
-            data.copyBytes(to: rawBuffer.assumingMemoryBound(to: UInt8.self), count: copyCount)
+            buffer.withUnsafeMutableBytes { rawBuffer -> Void in
+                data.copyBytes(to: rawBuffer.bindMemory(to: UInt8.self), count: copyCount)
+            }
             reply(copyCount, nil)
         } catch {
             reply(0, error)
@@ -1522,9 +1523,4 @@ private func posixError(_ code: Int32) -> NSError {
 
 private func fsKitError(_ code: FSError.Code) -> NSError {
     NSError(domain: FSKitErrorDomain, code: Int(code.rawValue))
-}
-
-@objc
-private protocol OSIxMutableFileDataBuffer {
-    func mutableBytes() -> UnsafeMutableRawPointer
 }

@@ -1699,6 +1699,11 @@ private final class SmokeMutableFileDataBuffer: NSObject {
         requestedLength
     }
 
+    @objc(withMutableBytes:)
+    func withMutableBytes(_ body: @escaping @convention(block) (UnsafeMutableRawPointer, Int) -> Void) {
+        body(raw, requestedLength)
+    }
+
     func data(count: Int) -> Data {
         Data(bytes: raw, count: min(count, capacity))
     }
