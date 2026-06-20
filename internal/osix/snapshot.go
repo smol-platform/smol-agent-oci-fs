@@ -76,7 +76,7 @@ func Snapshot(workspaceRoot, target string, opts SnapshotOptions) (SnapshotResul
 		}
 		layerRoot = mountInfo.UpperDir
 		layerEntries = changedOverlayEntries(parentTree, upperEntries)
-		whiteouts = upperWhiteouts
+		whiteouts = effectiveOverlayWhiteouts(parentTree, upperWhiteouts)
 		dirtyBytes = dirtyBytesForEntries(layerEntries)
 	}
 	layerData, err := makeLayer(layerRoot, layerEntries, whiteouts)
@@ -317,7 +317,7 @@ func diffOverlayUpper(parent, upper []TreeEntry, whiteouts []string) []Change {
 		}
 		changes = append(changes, Change{Kind: kind, Path: "/" + entry.Path})
 	}
-	for _, path := range whiteouts {
+	for _, path := range effectiveOverlayWhiteouts(parent, whiteouts) {
 		seen[path] = true
 		changes = append(changes, Change{Kind: "D", Path: "/" + path})
 	}
@@ -328,6 +328,18 @@ func diffOverlayUpper(parent, upper []TreeEntry, whiteouts []string) []Change {
 		return changes[i].Path < changes[j].Path
 	})
 	return changes
+}
+
+func effectiveOverlayWhiteouts(parent []TreeEntry, whiteouts []string) []string {
+	parentMap := treeMap(parent)
+	filtered := make([]string, 0, len(whiteouts))
+	for _, path := range whiteouts {
+		if _, ok := parentMap[path]; ok {
+			filtered = append(filtered, path)
+		}
+	}
+	sort.Strings(filtered)
+	return filtered
 }
 
 func changedOverlayEntries(parent, upper []TreeEntry) []TreeEntry {

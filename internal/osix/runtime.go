@@ -340,6 +340,7 @@ func overlayDirtyState(s store, info MountInfo) ([]TreeEntry, []string, int64, e
 	if info.SourceDigest != "" {
 		if _, _, parentCfg, err := s.loadManifest(info.SourceDigest); err == nil {
 			tree = changedOverlayEntries(parentCfg.Tree, tree)
+			whiteouts = effectiveOverlayWhiteouts(parentCfg.Tree, whiteouts)
 		}
 	}
 	return tree, whiteouts, dirtyBytesForEntries(tree), nil

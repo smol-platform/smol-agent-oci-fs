@@ -711,6 +711,7 @@ func TestSnapshotUsesOverlayUpperdirWhiteouts(t *testing.T) {
 	mustWrite(t, filepath.Join(upper, "agent", "workspace", "hidden-dir", "child.txt"), "hidden child\n")
 	mustWrite(t, filepath.Join(upper, "agent", "workspace", "opaque-dir", ".wh..wh..opq"), "")
 	mustWrite(t, filepath.Join(upper, "agent", "workspace", "opaque-dir", "new.txt"), "opaque new\n")
+	mustWrite(t, filepath.Join(upper, "agent", "workspace", ".wh.never-existed.txt"), "")
 	mustWrite(t, filepath.Join(upper, ".wh..env"), "")
 	mustWrite(t, filepath.Join(upper, ".osix", ".wh.mount.json"), "")
 	mustWrite(t, filepath.Join(upper, "agent", "tmp", ".wh.scratch.txt"), "")
@@ -749,6 +750,13 @@ func TestSnapshotUsesOverlayUpperdirWhiteouts(t *testing.T) {
 	}
 	if got := changeStrings(changes); !reflect.DeepEqual(got, wantChanges) {
 		t.Fatalf("upperdir changes mismatch\nwant: %#v\n got: %#v", wantChanges, got)
+	}
+	dirtyData, err := os.ReadFile(filepath.Join(filepath.Dir(info.WorkDir), "dirty.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(dirtyData), "never-existed.txt") {
+		t.Fatalf("dirty index included no-op whiteout: %s", dirtyData)
 	}
 	second, err := Snapshot(root, target, SnapshotOptions{Tag: "snap-000002"})
 	if err != nil {
