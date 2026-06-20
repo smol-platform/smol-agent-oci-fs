@@ -338,7 +338,9 @@ func overlayDirtyState(s store, info MountInfo) ([]TreeEntry, []string, int64, e
 		return nil, nil, 0, err
 	}
 	if info.SourceDigest != "" {
-		if _, _, parentCfg, err := s.loadManifest(info.SourceDigest); err == nil {
+		if _, _, parentCfg, err := s.loadManifest(info.SourceDigest); err != nil {
+			return nil, nil, 0, fmt.Errorf("load parent snapshot for dirty index: %w", err)
+		} else {
 			tree = changedOverlayEntries(parentCfg.Tree, tree)
 			whiteouts = effectiveOverlayWhiteouts(parentCfg.Tree, whiteouts)
 		}
