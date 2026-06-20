@@ -340,6 +340,11 @@ struct VolumeMetadataSmoke {
               !capabilities.supportsSparseFiles,
               volume.maximumLinkCount == 1,
               volume.enableOpenUnlinkEmulation,
+              !volume.xattrOperationsInhibited,
+              !volume.isOpenCloseInhibited,
+              !volume.isAccessCheckInhibited,
+              !volume.isVolumeRenameInhibited,
+              !volume.isPreallocateInhibited,
               volume.itemDeactivationPolicy.isEmpty else {
             throw SmokeError("volume capabilities do not match supported FSKit operation surface")
         }

@@ -75,6 +75,11 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
     var maximumXattrSize: Int { 128 * 1024 }
     var maximumFileSizeInBits: Int { 63 }
     var enableOpenUnlinkEmulation = true
+    var xattrOperationsInhibited = false
+    var isOpenCloseInhibited = false
+    var isAccessCheckInhibited = false
+    var isVolumeRenameInhibited = false
+    var isPreallocateInhibited = false
     var itemDeactivationPolicy: FSVolume.ItemDeactivationOptions { [] }
 
     func mount(options: FSTaskOptions, replyHandler reply: @escaping ((any Error)?) -> Void) {
