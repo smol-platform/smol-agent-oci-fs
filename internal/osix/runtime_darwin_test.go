@@ -117,6 +117,21 @@ func testDarwinFSKitRuntimeIntegration(t *testing.T, mode MountMode) {
 	if _, err := os.Stat(filepath.Join(filepath.Dir(info.WorkDir), "dirty.json")); err != nil {
 		t.Fatal(err)
 	}
+	watch, err := Watch(root, target, WatchOptions{Iterations: 1, MaxDirtyBytes: 1, TagPrefix: "darwin-watch-" + string(mode)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(watch.Snapshots) != 1 || watch.StatePath == "" {
+		t.Fatalf("unexpected watch result: %#v", watch)
+	}
+	watchRestore := filepath.Join(root, "watch-restore-"+string(mode))
+	if err := Restore(root, watch.Snapshots[0].ManifestDigest, watchRestore, RestoreOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	assertFile(t, filepath.Join(watchRestore, "agent", "workspace", "file.txt"), "v2\n")
+	assertFile(t, filepath.Join(watchRestore, "agent", "workspace", "new.txt"), "new\n")
+	assertMissing(t, filepath.Join(watchRestore, "agent", "workspace", "remove.txt"))
+
 	snap, err := rt.Snapshot(ctx, target, SnapshotOptions{Tag: "snap-000002"})
 	if err != nil {
 		t.Fatal(err)
