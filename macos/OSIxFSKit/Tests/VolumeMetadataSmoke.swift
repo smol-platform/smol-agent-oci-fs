@@ -338,7 +338,8 @@ struct VolumeMetadataSmoke {
         guard capabilities.supportsSymbolicLinks,
               !capabilities.supportsHardLinks,
               !capabilities.supportsSparseFiles,
-              volume.maximumLinkCount == 1 else {
+              volume.maximumLinkCount == 1,
+              volume.enableOpenUnlinkEmulation else {
             throw SmokeError("volume capabilities do not match supported FSKit operation surface")
         }
         let volumeStats = volume.volumeStatistics
