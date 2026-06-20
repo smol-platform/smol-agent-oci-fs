@@ -97,6 +97,7 @@ fskitctl="${repo_root}/macos/OSIxFSKit/.build/release/osix-fskitctl"
 valid_digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 mkdir -p "${tmp}/helper/lower" "${tmp}/helper/upper" "${tmp}/helper/work" "${tmp}/helper/nested-upper/work" "${tmp}/helper/world-upper"
+printf "not a directory" > "${tmp}/helper/file-target"
 chmod 0777 "${tmp}/helper/world-upper"
 
 if "${fskitctl}" mount \
@@ -115,6 +116,24 @@ elif [[ "$?" -ne 64 ]]; then
   exit 1
 fi
 grep -q "missing --target" "${tmp}/missing-target.err"
+
+if "${fskitctl}" mount \
+  --target "${tmp}/helper/file-target" \
+  --source-ref snap \
+  --source-digest "${valid_digest}" \
+  --workspace-root "${tmp}" \
+  --lower "${tmp}/helper/lower" \
+  --upper "${tmp}/helper/upper" \
+  --work "${tmp}/helper/work" \
+  2> "${tmp}/file-target.err"; then
+  echo "osix-fskitctl accepted file --target" >&2
+  exit 1
+elif [[ "$?" -ne 64 ]]; then
+  echo "osix-fskitctl file --target returned unexpected status" >&2
+  cat "${tmp}/file-target.err" >&2
+  exit 1
+fi
+grep -q -- "--target .* is not a directory" "${tmp}/file-target.err"
 
 if "${fskitctl}" mount \
   --target "${tmp}/target" \
@@ -169,6 +188,24 @@ elif [[ "$?" -ne 64 ]]; then
   exit 1
 fi
 grep -q "refusing world-writable runtime directory --upper" "${tmp}/world-upper.err"
+
+if "${fskitctl}" mount \
+  --target "${tmp}/helper/upper/target" \
+  --source-ref snap \
+  --source-digest "${valid_digest}" \
+  --workspace-root "${tmp}" \
+  --lower "${tmp}/helper/lower" \
+  --upper "${tmp}/helper/upper" \
+  --work "${tmp}/helper/work" \
+  2> "${tmp}/target-in-upper.err"; then
+  echo "osix-fskitctl accepted target nested in upper" >&2
+  exit 1
+elif [[ "$?" -ne 64 ]]; then
+  echo "osix-fskitctl target nested in upper returned unexpected status" >&2
+  cat "${tmp}/target-in-upper.err" >&2
+  exit 1
+fi
+grep -q -- "--target and --upper must be separate directories" "${tmp}/target-in-upper.err"
 
 if "${fskitctl}" mount \
   --target "${tmp}/target" \

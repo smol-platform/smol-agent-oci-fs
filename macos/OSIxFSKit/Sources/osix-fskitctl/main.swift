@@ -64,7 +64,7 @@ struct OSIxFSKitControl {
         let mode = opts["mode"] ?? "overlay"
         try validateMountMode(mode)
         try validateSourceDigest(sourceDigest)
-        try validateMountPaths(workspaceRoot: workspaceRoot, lower: lower, upper: upper, work: work)
+        try validateMountPaths(target: target, workspaceRoot: workspaceRoot, lower: lower, upper: upper, work: work)
         try await requireReady(bundleID: bundleID, fileSystemType: fsType)
 
         try FileManager.default.createDirectory(atPath: target, withIntermediateDirectories: true)
@@ -100,12 +100,27 @@ struct OSIxFSKitControl {
         }
     }
 
-    static func validateMountPaths(workspaceRoot: String, lower: String, upper: String, work: String) throws {
+    static func validateMountPaths(target: String, workspaceRoot: String, lower: String, upper: String, work: String) throws {
+        try validateMountTarget(path: target)
         try validateDirectory(path: workspaceRoot, option: "--workspace-root")
         try validateDirectory(path: lower, option: "--lower", rejectWorldWritable: true)
         try validateDirectory(path: upper, option: "--upper", rejectWorldWritable: true)
         try validateDirectory(path: work, option: "--work", rejectWorldWritable: true)
         try validateRuntimeDirectoriesAreDisjoint(lower: lower, upper: upper, work: work)
+        try validateTargetIsDisjoint(target: target, lower: lower, upper: upper, work: work)
+    }
+
+    static func validateMountTarget(path: String) throws {
+        var statBuffer = stat()
+        if lstat(path, &statBuffer) == 0 {
+            guard statBuffer.st_mode & S_IFMT == S_IFDIR else {
+                throw CLIError(message: "--target \(path) is not a directory", code: 64)
+            }
+            return
+        }
+        guard errno == ENOENT else {
+            throw CLIError(message: "--target \(path) is unavailable: \(String(cString: strerror(errno)))", code: 64)
+        }
     }
 
     static func validateDirectory(path: String, option: String, rejectWorldWritable: Bool = false) throws {
@@ -134,6 +149,19 @@ struct OSIxFSKitControl {
                 if current.1 == other.1 || isNestedPath(current.1, under: other.1) || isNestedPath(other.1, under: current.1) {
                     throw CLIError(message: "\(current.0) and \(other.0) must be separate directories", code: 64)
                 }
+            }
+        }
+    }
+
+    static func validateTargetIsDisjoint(target: String, lower: String, upper: String, work: String) throws {
+        let targetPath = canonicalPath(target)
+        for directory in [
+            ("--lower", canonicalPath(lower)),
+            ("--upper", canonicalPath(upper)),
+            ("--work", canonicalPath(work)),
+        ] {
+            if targetPath == directory.1 || isNestedPath(targetPath, under: directory.1) || isNestedPath(directory.1, under: targetPath) {
+                throw CLIError(message: "--target and \(directory.0) must be separate directories", code: 64)
             }
         }
     }
