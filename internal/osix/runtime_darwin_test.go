@@ -299,8 +299,12 @@ func TestDarwinFSKitIntegration(t *testing.T) {
 	if err := darwinFSKitAvailable(); err != nil {
 		t.Skipf("macOS FSKit prerequisites unavailable: %v", err)
 	}
-	testDarwinFSKitRuntimeIntegration(t, MountOverlay)
-	testDarwinFSKitRuntimeIntegration(t, MountFUSE)
+	for _, mode := range []MountMode{MountOverlay, MountFUSE} {
+		mode := mode
+		t.Run(string(mode), func(t *testing.T) {
+			testDarwinFSKitRuntimeIntegration(t, mode)
+		})
+	}
 }
 
 func testDarwinFSKitRuntimeIntegration(t *testing.T, mode MountMode) {
