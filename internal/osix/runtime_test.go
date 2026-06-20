@@ -683,6 +683,55 @@ func TestStatusRejectsMissingUpperdir(t *testing.T) {
 	}
 }
 
+func TestStatusRejectsMissingWorkdirMetadata(t *testing.T) {
+	root := t.TempDir()
+	if _, err := Init(root, InitOptions{
+		Base:          "example/base:latest",
+		Name:          "agent",
+		StateRef:      "local/agent",
+		Mount:         filepath.Join(root, "fs"),
+		DefaultBranch: "main",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fs := filepath.Join(root, "fs")
+	mustWrite(t, filepath.Join(fs, "agent", "workspace", "file.txt"), "v1\n")
+	first, err := Snapshot(root, fs, SnapshotOptions{Tag: "snap-000001"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	target := filepath.Join(root, "merged")
+	upper := filepath.Join(root, "upper")
+	mustWrite(t, filepath.Join(upper, "agent", "workspace", "file.txt"), "v2\n")
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	s, err := findStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.writeMount(MountInfo{
+		Target:       absPath(target),
+		SourceRef:    "snap-000001",
+		SourceDigest: first.ManifestDigest,
+		Mode:         MountOverlay,
+		RW:           true,
+		UpperDir:     upper,
+		State:        "mounted",
+		PID:          os.Getpid(),
+		CreatedAt:    time.Now().UTC().Truncate(time.Second),
+		UpdatedAt:    time.Now().UTC().Truncate(time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = NewMountRuntime(root, MountAuto).Status(context.Background(), target)
+	if err == nil || !strings.Contains(err.Error(), "runtime metadata missing work directory") {
+		t.Fatalf("expected missing workdir metadata error, got %v", err)
+	}
+}
+
 func TestPersistMountedRuntimeRollsBackOnMetadataFailure(t *testing.T) {
 	root := t.TempDir()
 	if _, err := Init(root, InitOptions{

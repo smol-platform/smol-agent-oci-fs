@@ -268,19 +268,30 @@ func RecoverMount(workspaceRoot, target string) (MountInfo, error) {
 }
 
 func validateRuntimePermissions(info MountInfo) error {
-	for _, dir := range []string{info.UpperDir, info.WorkDir, info.LowerDir} {
-		if strings.TrimSpace(dir) == "" {
+	for _, dir := range []struct {
+		name     string
+		path     string
+		required bool
+	}{
+		{name: "upper", path: info.UpperDir, required: info.Mode == MountOverlay || info.Mode == MountFUSE},
+		{name: "work", path: info.WorkDir, required: info.Mode == MountOverlay || info.Mode == MountFUSE},
+		{name: "lower", path: info.LowerDir},
+	} {
+		if strings.TrimSpace(dir.path) == "" {
+			if dir.required {
+				return fmt.Errorf("runtime metadata missing %s directory", dir.name)
+			}
 			continue
 		}
-		st, err := os.Stat(dir)
+		st, err := os.Stat(dir.path)
 		if err != nil {
-			return fmt.Errorf("runtime directory %s is unavailable: %w", dir, err)
+			return fmt.Errorf("runtime directory %s is unavailable: %w", dir.path, err)
 		}
 		if !st.IsDir() {
-			return fmt.Errorf("runtime directory %s is not a directory", dir)
+			return fmt.Errorf("runtime directory %s is not a directory", dir.path)
 		}
 		if st.Mode().Perm()&0o002 != 0 {
-			return fmt.Errorf("refusing world-writable runtime directory %s", dir)
+			return fmt.Errorf("refusing world-writable runtime directory %s", dir.path)
 		}
 	}
 	return nil
