@@ -386,6 +386,22 @@ struct VolumeMetadataSmoke {
             throw SmokeError("volume statistics do not reflect backing upperdir statfs data")
         }
         let item = OSIxItem(relativePath: relativePath, physicalPath: lowerFile, type: .file, source: .lower)
+        let readOnlyVolume = OSIxVolume(
+            volumeID: FSVolume.Identifier(uuid: UUID()),
+            volumeName: FSFileName(string: "OSIxReadOnlySmoke"),
+            mountOptions: OSIxMountOptions(
+                bundle: nil,
+                workspace: nil,
+                sourceRef: nil,
+                sourceDigest: nil,
+                lower: lower,
+                upper: upper,
+                work: work,
+                mode: "overlay",
+                rw: "false"
+            )
+        )
+        try validateReadOnlyMutationPolicy(volume: readOnlyVolume, lower: lower, item: item)
         try openItem(volume: volume, item: item, modes: .read)
         try closeItem(volume: volume, item: item, modes: [])
         try deactivateItem(volume: volume, item: item)
@@ -1449,6 +1465,54 @@ struct VolumeMetadataSmoke {
             .replacingOccurrences(of: "+", with: "-")
             .replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: "=", with: "")
+    }
+
+    static func validateReadOnlyMutationPolicy(volume: OSIxVolume, lower: String, item: OSIxItem) throws {
+        let workspace = workspaceItem(lower: lower, relativePath: "agent/workspace")
+        guard try checkAccess(volume: volume, item: item, access: accessMask(1 << 1)) else {
+            throw SmokeError("read-only mount denied read access")
+        }
+        guard !(try checkAccess(volume: volume, item: item, access: accessMask(1 << 2))) else {
+            throw SmokeError("read-only mount allowed write access")
+        }
+
+        try assertReadOnlyMutation("write") {
+            try writeData(volume: volume, data: Data("blocked".utf8), item: item, offset: 0)
+        }
+
+        let attributes = FSItem.SetAttributesRequest()
+        attributes.size = 1
+        try assertReadOnlyMutation("setAttributes") {
+            _ = try setAttributes(volume: volume, request: attributes, item: item)
+        }
+
+        try assertReadOnlyMutation("createItem") {
+            try createItem(volume: volume, name: FSFileName(string: "readonly-created.txt"), type: .file, directory: workspace, attributes: FSItem.SetAttributesRequest())
+        }
+
+        try assertReadOnlyMutation("createSymbolicLink") {
+            try createSymbolicLink(volume: volume, name: FSFileName(string: "readonly-link"), directory: workspace, contents: FSFileName(string: "file.txt"), attributes: FSItem.SetAttributesRequest())
+        }
+
+        try assertReadOnlyMutation("setXattr") {
+            try setXattr(volume: volume, name: FSFileName(string: "osix.readonly"), value: Data("blocked".utf8), item: item, policy: .alwaysSet)
+        }
+
+        try assertReadOnlyMutation("removeItem") {
+            try removeItem(volume: volume, item: item, name: FSFileName(string: "file.txt"), directory: workspace)
+        }
+
+        try assertReadOnlyMutation("renameItem") {
+            try renameItem(volume: volume, item: item, sourceDirectory: workspace, sourceName: FSFileName(string: "file.txt"), destinationName: FSFileName(string: "readonly-renamed.txt"), destinationDirectory: workspace)
+        }
+    }
+
+    static func assertReadOnlyMutation(_ operation: String, _ body: () throws -> Void) throws {
+        do {
+            try body()
+            throw SmokeError("read-only mount allowed \(operation)")
+        } catch let error as NSError where error.domain == NSPOSIXErrorDomain && error.code == Int(EROFS) {
+        }
     }
 
     static func setAttributes(volume: OSIxVolume, request: FSItem.SetAttributesRequest, item: FSItem) throws -> FSItem.Attributes {

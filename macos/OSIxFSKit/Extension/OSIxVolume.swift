@@ -131,6 +131,7 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
                 reply(try attributes(for: current), nil)
                 return
             }
+            try requireWritable()
             guard mountOptions?.upper != nil else {
                 throw posixError(EINVAL)
             }
@@ -223,6 +224,7 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
             return
         }
         do {
+            try requireWritable()
             let currentDirectory = try currentDirectory(for: directory)
             let relativePath = joinRelative(currentDirectory.relativePath, rawName)
             let target = upperPath(upper, relativePath)
@@ -283,6 +285,7 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
             return
         }
         do {
+            try requireWritable()
             let currentDirectory = try currentDirectory(for: directory)
             let relativePath = joinRelative(currentDirectory.relativePath, rawName)
             let target = upperPath(upper, relativePath)
@@ -363,6 +366,10 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
         }
         do {
             let current = try currentItem(for: item)
+            if !mountOptionsAllowsWrites(), needsWriteAccess(access.rawValue) {
+                reply(false, nil)
+                return
+            }
             var statBuffer = stat()
             guard lstat(current.physicalPath, &statBuffer) == 0 else {
                 throw posixError(errno)
@@ -409,6 +416,7 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
             return
         }
         do {
+            try requireWritable()
             let current = try currentItem(for: item)
             let options = xattrOptions(for: current.type)
             let hadUpperItem = hasUpperItem(for: current.relativePath)
@@ -529,6 +537,7 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
             return
         }
         do {
+            try requireWritable()
             let currentDirectory = try currentDirectory(for: directory)
             let relativePath = joinRelative(currentDirectory.relativePath, rawName)
             guard let current = resolveItem(relativePath) else {
@@ -573,6 +582,7 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
             return
         }
         do {
+            try requireWritable()
             let currentSourceDirectory = try currentDirectory(for: sourceDirectory)
             let sourceRelativePath = joinRelative(currentSourceDirectory.relativePath, oldName)
             guard let current = resolveItem(sourceRelativePath) else {
@@ -812,6 +822,7 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
             return
         }
         do {
+            try requireWritable()
             let current = try currentItem(for: item)
             guard current.type == .file else {
                 throw posixError(current.type == .directory ? EISDIR : EINVAL)
@@ -957,6 +968,16 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
             return true
         }
         return newAttributes.isValid(.accessTime) || newAttributes.isValid(.modifyTime)
+    }
+
+    private func requireWritable() throws {
+        guard mountOptionsAllowsWrites() else {
+            throw posixError(EROFS)
+        }
+    }
+
+    private func mountOptionsAllowsWrites() -> Bool {
+        mountOptions?.allowsWrites ?? true
     }
 
     private func isAccessAllowed(_ access: FSVolume.AccessMask, for statBuffer: stat, itemType: FSItem.ItemType) -> Bool {
