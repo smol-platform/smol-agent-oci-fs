@@ -339,6 +339,22 @@ struct VolumeMetadataSmoke {
             throw SmokeError("volume statistics do not reflect backing upperdir statfs data")
         }
         let item = OSIxItem(relativePath: relativePath, physicalPath: lowerFile, type: .file, source: .lower)
+        try openItem(volume: volume, item: item, modes: .read)
+        try closeItem(volume: volume, item: item, modes: [])
+        do {
+            try openItem(volume: volume, item: workspaceItem(lower: lower, relativePath: "agent/workspace"), modes: .read)
+            throw SmokeError("openItem accepted a directory")
+        } catch let error as NSError where error.domain == NSPOSIXErrorDomain && error.code == Int(EISDIR) {
+        }
+        do {
+            try openItem(
+                volume: volume,
+                item: OSIxItem(relativePath: "agent/workspace/missing-open.txt", physicalPath: URL(fileURLWithPath: lower).appendingPathComponent("agent/workspace/missing-open.txt").path, type: .file, source: .lower),
+                modes: .read
+            )
+            throw SmokeError("openItem accepted a missing file")
+        } catch let error as NSError where error.domain == NSPOSIXErrorDomain && error.code == Int(ENOENT) {
+        }
         let request = FSItem.SetAttributesRequest()
         request.size = 2
         request.mode = 0o600
@@ -1311,6 +1327,26 @@ struct VolumeMetadataSmoke {
     static func createLink(volume: OSIxVolume, item: FSItem, name: FSFileName, directory: FSItem) throws {
         var replyError: (any Error)?
         volume.createLink(to: item, named: name, inDirectory: directory) { _, error in
+            replyError = error
+        }
+        if let replyError {
+            throw replyError
+        }
+    }
+
+    static func openItem(volume: OSIxVolume, item: FSItem, modes: FSVolume.OpenModes) throws {
+        var replyError: (any Error)?
+        volume.openItem(item, modes: modes) { error in
+            replyError = error
+        }
+        if let replyError {
+            throw replyError
+        }
+    }
+
+    static func closeItem(volume: OSIxVolume, item: FSItem, modes: FSVolume.OpenModes) throws {
+        var replyError: (any Error)?
+        volume.closeItem(item, modes: modes) { error in
             replyError = error
         }
         if let replyError {

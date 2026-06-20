@@ -5,7 +5,7 @@ import FSKit
 private let opaqueWhiteoutName = ".wh..wh..opq"
 
 @objc
-final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperations, FSVolume.XattrOperations {
+final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperations, FSVolume.XattrOperations, FSVolume.OpenCloseOperations {
     private let fileManager = FileManager.default
     private var mountOptions: OSIxMountOptions?
     private var root = OSIxItem.root
@@ -315,6 +315,26 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
 
     func createLink(to item: FSItem, named name: FSFileName, inDirectory directory: FSItem, replyHandler reply: @escaping (FSFileName?, (any Error)?) -> Void) {
         reply(nil, posixError(ENOTSUP))
+    }
+
+    func openItem(_ item: FSItem, modes: FSVolume.OpenModes, replyHandler reply: @escaping ((any Error)?) -> Void) {
+        guard let item = item as? OSIxItem else {
+            reply(posixError(EINVAL))
+            return
+        }
+        do {
+            let current = try currentItem(for: item)
+            guard current.type == .file else {
+                throw posixError(current.type == .directory ? EISDIR : EINVAL)
+            }
+            reply(nil)
+        } catch {
+            reply(error)
+        }
+    }
+
+    func closeItem(_ item: FSItem, modes: FSVolume.OpenModes, replyHandler reply: @escaping ((any Error)?) -> Void) {
+        reply(nil)
     }
 
     func getXattr(named name: FSFileName, of item: FSItem, replyHandler reply: @escaping (Data?, (any Error)?) -> Void) {
