@@ -316,6 +316,13 @@ struct VolumeMetadataSmoke {
                 mode: "overlay"
             )
         )
+        let capabilities = volume.supportedVolumeCapabilities
+        guard capabilities.supportsSymbolicLinks,
+              !capabilities.supportsHardLinks,
+              !capabilities.supportsSparseFiles,
+              volume.maximumLinkCount == 1 else {
+            throw SmokeError("volume capabilities do not match supported FSKit operation surface")
+        }
         let item = OSIxItem(relativePath: relativePath, physicalPath: lowerFile, type: .file, source: .lower)
         let request = FSItem.SetAttributesRequest()
         request.size = 2

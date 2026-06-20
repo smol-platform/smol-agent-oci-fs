@@ -22,6 +22,8 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
         capabilities.supports2TBFiles = true
         capabilities.supportsFastStatFS = true
         capabilities.supportsSymbolicLinks = true
+        capabilities.supportsHardLinks = false
+        capabilities.supportsSparseFiles = false
         capabilities.caseFormat = .sensitive
         return capabilities
     }
@@ -38,7 +40,7 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
         return stats
     }
 
-    var maximumLinkCount: Int { 32_767 }
+    var maximumLinkCount: Int { 1 }
     var maximumNameLength: Int { 255 }
     var restrictsOwnershipChanges: Bool { true }
     var truncatesLongNames: Bool { false }
