@@ -1279,9 +1279,28 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
         guard let work = mountOptions?.work else {
             throw posixError(EINVAL)
         }
-        let directory = URL(fileURLWithPath: work).appendingPathComponent(".osix-staging").path
-        try fileManager.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        let directory = try privateStagingDirectory(work: work)
         return URL(fileURLWithPath: directory).appendingPathComponent("\(kind)-\(UUID().uuidString)").path
+    }
+
+    private func privateStagingDirectory(work: String) throws -> String {
+        let directory = URL(fileURLWithPath: work).appendingPathComponent(".osix-staging").path
+        try fileManager.createDirectory(
+            atPath: directory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        var statBuffer = stat()
+        guard lstat(directory, &statBuffer) == 0 else {
+            throw posixError(errno)
+        }
+        guard statBuffer.st_mode & S_IFMT == S_IFDIR else {
+            throw posixError(ENOTDIR)
+        }
+        if chmod(directory, 0o700) != 0 {
+            throw posixError(errno)
+        }
+        return directory
     }
 
     private func stashItem(atPath source: String, toPath destination: String) throws {

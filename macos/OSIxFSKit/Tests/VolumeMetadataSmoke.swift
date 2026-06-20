@@ -222,6 +222,7 @@ struct VolumeMetadataSmoke {
         let upperDanglingRenameDestination = URL(fileURLWithPath: upper).appendingPathComponent(upperDanglingRenameDestinationPath).path
         let removedDirectoryWhiteout = URL(fileURLWithPath: upper).appendingPathComponent("agent/.wh.removed").path
         let dirtyFile = URL(fileURLWithPath: work).deletingLastPathComponent().appendingPathComponent("dirty.json").path
+        let stagingDirectory = URL(fileURLWithPath: work).appendingPathComponent(".osix-staging").path
         if getuid() != 0 {
             let unreadableDirtyDirectory = URL(fileURLWithPath: upper).appendingPathComponent("agent/dirty-scan-failure").path
             try FileManager.default.createDirectory(atPath: unreadableDirtyDirectory, withIntermediateDirectories: true)
@@ -1216,6 +1217,11 @@ struct VolumeMetadataSmoke {
 
         let dirtyData = try Data(contentsOf: URL(fileURLWithPath: dirtyFile))
         let dirty = try JSONDecoder().decode(DirtyOutput.self, from: dirtyData)
+        let stagingAttributes = try FileManager.default.attributesOfItem(atPath: stagingDirectory)
+        let stagingMode = (stagingAttributes[.posixPermissions] as? NSNumber)?.uint16Value ?? 0
+        guard stagingMode == 0o700 else {
+            throw SmokeError(String(format: "FSKit staging directory mode is %04o, want 0700", stagingMode))
+        }
         guard !dirty.paths.keys.contains(where: { $0.contains(".osix-stash-") || $0.contains(".osix-backup-") || $0.contains(".osix-hidden-") }) else {
             throw SmokeError("dirty index leaked internal FSKit staging path")
         }
