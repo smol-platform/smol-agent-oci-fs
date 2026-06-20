@@ -727,6 +727,9 @@ func extractLayer(data []byte, target string) error {
 			if err := os.MkdirAll(path, fs.FileMode(hdr.Mode)); err != nil {
 				return err
 			}
+			if err := os.Chmod(path, fs.FileMode(hdr.Mode)); err != nil {
+				return err
+			}
 		case tar.TypeReg, tar.TypeRegA:
 			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 				return err
@@ -742,6 +745,9 @@ func extractLayer(data []byte, target string) error {
 			}
 			if closeErr != nil {
 				return closeErr
+			}
+			if err := os.Chmod(path, fs.FileMode(hdr.Mode)); err != nil {
+				return err
 			}
 		case tar.TypeSymlink:
 			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -219,6 +220,14 @@ func TestSnapshotRestoreTypeChanges(t *testing.T) {
 	fs := filepath.Join(root, "fs")
 	mustWrite(t, filepath.Join(fs, "agent", "workspace", "replace-dir", "child.txt"), "old child\n")
 	mustWrite(t, filepath.Join(fs, "agent", "workspace", "replace-file"), "old file\n")
+	mustWrite(t, filepath.Join(fs, "agent", "workspace", "mode-file"), "mode\n")
+	if err := os.Chmod(filepath.Join(fs, "agent", "workspace", "mode-file"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	modeDir := filepath.Join(fs, "agent", "workspace", "mode-dir")
+	if err := os.MkdirAll(modeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Symlink("old-target", filepath.Join(fs, "agent", "workspace", "replace-link")); err != nil {
 		t.Fatal(err)
 	}
@@ -244,6 +253,12 @@ func TestSnapshotRestoreTypeChanges(t *testing.T) {
 	mustWrite(t, filepath.Join(fs, "agent", "workspace", "replace-dir"), "new file\n")
 	mustWrite(t, filepath.Join(fs, "agent", "workspace", "replace-file", "child.txt"), "new child\n")
 	mustWrite(t, filepath.Join(fs, "agent", "workspace", "replace-link"), "new link file\n")
+	if err := os.Chmod(filepath.Join(fs, "agent", "workspace", "mode-file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(modeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Symlink("new-same-type-target", filepath.Join(fs, "agent", "workspace", "retarget-link")); err != nil {
 		t.Fatal(err)
 	}
@@ -255,6 +270,8 @@ func TestSnapshotRestoreTypeChanges(t *testing.T) {
 		"agent/workspace/.wh.replace-dir",
 		"agent/workspace/.wh.replace-file",
 		"agent/workspace/.wh.replace-link",
+		"agent/workspace/mode-dir",
+		"agent/workspace/mode-file",
 		"agent/workspace/replace-dir",
 		"agent/workspace/replace-file",
 		"agent/workspace/replace-file/child.txt",
@@ -276,6 +293,8 @@ func TestSnapshotRestoreTypeChanges(t *testing.T) {
 	if linkTarget != "new-same-type-target" {
 		t.Fatalf("retarget-link target = %q", linkTarget)
 	}
+	assertMode(t, filepath.Join(restore, "agent", "workspace", "mode-file"), 0o600)
+	assertMode(t, filepath.Join(restore, "agent", "workspace", "mode-dir"), 0o700)
 }
 
 func TestAgeEncryptedSnapshotRestore(t *testing.T) {
@@ -481,6 +500,17 @@ func assertMissing(t *testing.T, path string) {
 		t.Fatalf("%s exists unexpectedly", path)
 	} else if !os.IsNotExist(err) {
 		t.Fatal(err)
+	}
+}
+
+func assertMode(t *testing.T, path string, want fs.FileMode) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != want {
+		t.Fatalf("%s mode = %o, want %o", path, got, want)
 	}
 }
 
