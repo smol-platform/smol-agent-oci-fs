@@ -664,7 +664,12 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
     }
 
     func deactivate(options: FSDeactivateOptions, replyHandler reply: @escaping ((any Error)?) -> Void) {
-        reply(nil)
+        do {
+            try flushDirtyIndex()
+            reply(nil)
+        } catch {
+            reply(error)
+        }
     }
 
     func read(from item: FSItem, at offset: off_t, length: Int, into buffer: FSMutableFileDataBuffer, replyHandler reply: @escaping (Int, (any Error)?) -> Void) {

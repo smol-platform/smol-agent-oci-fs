@@ -358,10 +358,20 @@ struct VolumeMetadataSmoke {
             throw SmokeError("synchronize did not write dirty index")
         }
         try? FileManager.default.removeItem(atPath: dirtyFile)
+        try deactivate(volume: volume)
+        guard FileManager.default.fileExists(atPath: dirtyFile) else {
+            throw SmokeError("deactivate did not write dirty index")
+        }
+        try? FileManager.default.removeItem(atPath: dirtyFile)
         try FileManager.default.createDirectory(atPath: dirtyFile, withIntermediateDirectories: false)
         do {
             try synchronize(volume: volume)
             throw SmokeError("synchronize succeeded despite dirty flush failure")
+        } catch let error as NSError where error.domain == NSPOSIXErrorDomain || error.domain == NSCocoaErrorDomain {
+        }
+        do {
+            try deactivate(volume: volume)
+            throw SmokeError("deactivate succeeded despite dirty flush failure")
         } catch let error as NSError where error.domain == NSPOSIXErrorDomain || error.domain == NSCocoaErrorDomain {
         }
         let flushFailureAttributes = FSItem.SetAttributesRequest()
@@ -1351,6 +1361,16 @@ struct VolumeMetadataSmoke {
     static func synchronize(volume: OSIxVolume) throws {
         var replyError: (any Error)?
         volume.synchronize(flags: FSSyncFlags(rawValue: 0)!) { error in
+            replyError = error
+        }
+        if let replyError {
+            throw replyError
+        }
+    }
+
+    static func deactivate(volume: OSIxVolume) throws {
+        var replyError: (any Error)?
+        volume.deactivate(options: FSDeactivateOptions(rawValue: 0)) { error in
             replyError = error
         }
         if let replyError {
