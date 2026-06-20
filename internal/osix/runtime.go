@@ -306,7 +306,7 @@ func rebuildDirtyIndex(s store, info MountInfo) (int64, error) {
 	}
 	tree, whiteouts, dirtyBytes, err := overlayDirtyState(s, info)
 	if err != nil {
-		return 0, nil
+		return 0, err
 	}
 	paths := map[string]string{}
 	for _, entry := range tree {
