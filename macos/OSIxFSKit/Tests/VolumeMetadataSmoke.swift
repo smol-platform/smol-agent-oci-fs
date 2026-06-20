@@ -339,7 +339,8 @@ struct VolumeMetadataSmoke {
               !capabilities.supportsHardLinks,
               !capabilities.supportsSparseFiles,
               volume.maximumLinkCount == 1,
-              volume.enableOpenUnlinkEmulation else {
+              volume.enableOpenUnlinkEmulation,
+              volume.itemDeactivationPolicy.isEmpty else {
             throw SmokeError("volume capabilities do not match supported FSKit operation surface")
         }
         let volumeStats = volume.volumeStatistics
@@ -360,6 +361,7 @@ struct VolumeMetadataSmoke {
         let item = OSIxItem(relativePath: relativePath, physicalPath: lowerFile, type: .file, source: .lower)
         try openItem(volume: volume, item: item, modes: .read)
         try closeItem(volume: volume, item: item, modes: [])
+        try deactivateItem(volume: volume, item: item)
         do {
             try openItem(volume: volume, item: workspaceItem(lower: lower, relativePath: "agent/workspace"), modes: .read)
             throw SmokeError("openItem accepted a directory")
@@ -1402,6 +1404,16 @@ struct VolumeMetadataSmoke {
     static func closeItem(volume: OSIxVolume, item: FSItem, modes: FSVolume.OpenModes) throws {
         var replyError: (any Error)?
         volume.closeItem(item, modes: modes) { error in
+            replyError = error
+        }
+        if let replyError {
+            throw replyError
+        }
+    }
+
+    static func deactivateItem(volume: OSIxVolume, item: FSItem) throws {
+        var replyError: (any Error)?
+        volume.deactivateItem(item) { error in
             replyError = error
         }
         if let replyError {

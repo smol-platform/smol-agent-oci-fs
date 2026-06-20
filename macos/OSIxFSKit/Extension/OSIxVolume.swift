@@ -5,7 +5,7 @@ import FSKit
 private let opaqueWhiteoutName = ".wh..wh..opq"
 
 @objc
-final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperations, FSVolume.XattrOperations, FSVolume.OpenCloseOperations, FSVolume.PreallocateOperations, FSVolume.AccessCheckOperations, FSVolume.RenameOperations {
+final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperations, FSVolume.XattrOperations, FSVolume.OpenCloseOperations, FSVolume.PreallocateOperations, FSVolume.AccessCheckOperations, FSVolume.RenameOperations, FSVolume.ItemDeactivation {
     private let fileManager = FileManager.default
     private var mountOptions: OSIxMountOptions?
     private var root = OSIxItem.root
@@ -75,6 +75,7 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
     var maximumXattrSize: Int { 128 * 1024 }
     var maximumFileSizeInBits: Int { 63 }
     var enableOpenUnlinkEmulation = true
+    var itemDeactivationPolicy: FSVolume.ItemDeactivationOptions { [] }
 
     func mount(options: FSTaskOptions, replyHandler reply: @escaping ((any Error)?) -> Void) {
         do {
@@ -335,6 +336,10 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
     }
 
     func closeItem(_ item: FSItem, modes: FSVolume.OpenModes, replyHandler reply: @escaping ((any Error)?) -> Void) {
+        reply(nil)
+    }
+
+    func deactivateItem(_ item: FSItem, replyHandler reply: @escaping ((any Error)?) -> Void) {
         reply(nil)
     }
 
