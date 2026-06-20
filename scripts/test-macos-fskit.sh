@@ -9,7 +9,7 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   exit 2
 fi
 
-"${repo_root}/scripts/install-macos-fskit-app.sh" --no-open --background-register --wait-ready="${OSIX_FSKIT_READY_TIMEOUT:-10}"
+"${repo_root}/scripts/install-macos-fskit-app.sh" --no-open --background-register --wait-ready="${OSIX_FSKIT_READY_TIMEOUT:-10}" --no-open-settings
 
 if ! osix-fskitctl doctor --bundle-id "${OSIX_FSKIT_BUNDLE_ID:-io.github.smol-platform.smol-agent-oci-fs.fskit.extension}"; then
   echo "fix the listed FSKit extension prerequisite, then rerun this script" >&2

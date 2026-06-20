@@ -13,10 +13,12 @@ elect_after_install=1
 build_helper=1
 background_registration_launch=0
 wait_ready_seconds=0
+open_settings_on_failure=auto
+settings_url="x-apple.systempreferences:com.apple.LoginItems-Settings.extension"
 
 usage() {
   cat >&2 <<EOF
-usage: $0 [--no-open] [--background-register] [--wait-ready=SECONDS] [--no-register] [--no-elect] [--no-helper]
+usage: $0 [--no-open] [--background-register] [--wait-ready=SECONDS] [--open-settings] [--no-open-settings] [--no-register] [--no-elect] [--no-helper]
 
 Builds and installs the OSIx FSKit host app into:
   ${target_app}
@@ -25,7 +27,9 @@ By default this also registers the app extension with PlugInKit, elects it
 for the current user, and opens the host app. Use --background-register with
 --no-open when tests need to trigger ExtensionKit discovery without foregrounding
 the app. macOS may still require enabling the File System Extension in System
-Settings before FSClient reports it ready.
+Settings before FSClient reports it ready. Interactive installs open the Login
+Items & Extensions settings pane when FSClient still reports the extension
+disabled; use --no-open-settings to suppress this.
 EOF
 }
 
@@ -44,6 +48,12 @@ for arg in "$@"; do
       ;;
     --wait-ready=*)
       wait_ready_seconds="${arg#--wait-ready=}"
+      ;;
+    --open-settings)
+      open_settings_on_failure=1
+      ;;
+    --no-open-settings)
+      open_settings_on_failure=0
       ;;
     --no-register)
       register_after_install=0
@@ -122,5 +132,11 @@ if [[ -x "${helper}" ]]; then
     "${helper}" doctor --bundle-id "${bundle_id}"
   elif ! "${helper}" doctor --bundle-id "${bundle_id}"; then
     echo "enable the OSIx FSKit extension in System Settings > General > Login Items & Extensions > File System Extensions"
+    echo "settings URL: ${settings_url}"
+    if [[ "${open_settings_on_failure}" == "1" || ( "${open_settings_on_failure}" == "auto" && "${open_after_install}" -eq 1 ) ]]; then
+      /usr/bin/open "${settings_url}" >/dev/null 2>&1 || {
+        echo "warning: failed to open System Settings; open ${settings_url} manually" >&2
+      }
+    fi
   fi
 fi

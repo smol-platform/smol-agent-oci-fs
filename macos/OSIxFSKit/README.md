@@ -48,7 +48,9 @@ Install the host app into `~/Applications` and launch it for local development:
 
 The installer builds the helper and app bundle, copies the app into
 `~/Applications`, registers the embedded `.appex` with PlugInKit, elects it for
-the current user, and runs `osix-fskitctl doctor`.
+the current user, and runs `osix-fskitctl doctor`. If `FSClient` still reports
+the module disabled during an interactive install, the installer opens the Login
+Items & Extensions settings pane so the File System Extension can be enabled.
 
 For noninteractive test setup, use:
 
@@ -64,6 +66,8 @@ extension ready.
 PlugInKit registration is not the same as FSKit runtime enablement. If doctor
 reports that FSClient does not see an enabled module, enable the extension in
 System Settings > General > Login Items & Extensions > File System Extensions.
+Use `--open-settings` to force opening that settings pane after a failed doctor
+check, or `--no-open-settings` to suppress it in scripted setup.
 
 The app and extension are ad-hoc signed for local development. Distribution
 requires a Developer ID or App Store signing identity and an approved FSKit

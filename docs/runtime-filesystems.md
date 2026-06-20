@@ -108,7 +108,10 @@ The installer builds the helper and app, copies the app into `~/Applications`,
 registers the embedded extension with PlugInKit, elects it for the current user,
 and runs `osix-fskitctl doctor`. If doctor says FSClient does not report the
 module enabled, finish enablement in System Settings > General > Login Items &
-Extensions > File System Extensions.
+Extensions > File System Extensions. Interactive installs open that settings
+pane automatically on a failed doctor check; pass `--no-open-settings` to keep
+the install fully noninteractive or `--open-settings` to force the settings pane
+after a failed readiness check.
 
 The integration harness uses `--no-open --background-register` to launch the
 host app hidden long enough for ExtensionKit/PlugInKit discovery without
