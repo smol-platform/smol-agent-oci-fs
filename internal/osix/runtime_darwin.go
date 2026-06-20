@@ -3,7 +3,6 @@
 package osix
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -107,11 +106,10 @@ func darwinFSKitType() string {
 }
 
 func darwinFSKitDoctor(helper string) error {
-	var stderr bytes.Buffer
 	cmd := exec.Command(helper, "doctor", "--bundle-id", darwinFSKitBundleID(), "--fstype", darwinFSKitType())
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(stderr.String())
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
 		if msg == "" {
 			msg = err.Error()
 		}

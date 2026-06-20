@@ -83,6 +83,25 @@ func TestDarwinFSKitDoctorPassesBundleAndFSType(t *testing.T) {
 	assertFlagValue(t, args, "--fstype", "ExampleFS")
 }
 
+func TestDarwinFSKitDoctorIncludesStdoutDiagnostics(t *testing.T) {
+	root := t.TempDir()
+	helperFile := filepath.Join(root, "osix-fskitctl")
+	helperScript := "#!/bin/sh\n" +
+		"printf 'helper stdout diagnostic\\n'\n" +
+		"exit 69\n"
+	if err := os.WriteFile(helperFile, []byte(helperScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	err := darwinFSKitDoctor(helperFile)
+	if err == nil {
+		t.Fatalf("expected doctor failure")
+	}
+	if !strings.Contains(err.Error(), "helper stdout diagnostic") {
+		t.Fatalf("expected stdout diagnostic in error, got %v", err)
+	}
+}
+
 func TestDarwinFSKitMountPassesAbsoluteTargetToHelper(t *testing.T) {
 	if _, err := os.Stat("/System/Library/Frameworks/FSKit.framework"); err != nil {
 		t.Skipf("macOS FSKit framework unavailable: %v", err)
