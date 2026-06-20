@@ -1055,8 +1055,12 @@ func whiteoutName(target string) string {
 
 func applyWhiteout(root, whiteout string) error {
 	dir, base := filepath.Split(whiteout)
+	if base == ".wh..wh..opq" {
+		return fmt.Errorf("invalid whiteout %q", whiteout)
+	}
 	targetName := strings.TrimPrefix(base, ".wh.")
-	if targetName == "" || targetName == base {
+	if targetName == "" || targetName == base || targetName == "." || targetName == ".." ||
+		strings.ContainsAny(targetName, `/\`) {
 		return fmt.Errorf("invalid whiteout %q", whiteout)
 	}
 	return os.RemoveAll(filepath.Join(root, dir, targetName))

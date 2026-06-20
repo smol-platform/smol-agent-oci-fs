@@ -350,6 +350,47 @@ func TestExtractLayerRejectsSymlinkTraversal(t *testing.T) {
 	assertMissing(t, filepath.Join(outside, "owned.txt"))
 }
 
+func TestExtractLayerRejectsMalformedWhiteout(t *testing.T) {
+	restore := t.TempDir()
+	mustWrite(t, filepath.Join(restore, "agent", "workspace", "keep.txt"), "keep\n")
+	layer := rawLayer(t, func(tw *tar.Writer) {
+		if err := tw.WriteHeader(&tar.Header{
+			Name:     "agent/workspace/.wh..",
+			Typeflag: tar.TypeReg,
+			Mode:     0,
+			Size:     0,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	err := extractLayer(layer, restore)
+	if err == nil || !strings.Contains(err.Error(), "invalid whiteout") {
+		t.Fatalf("expected invalid whiteout error, got %v", err)
+	}
+	assertFile(t, filepath.Join(restore, "agent", "workspace", "keep.txt"), "keep\n")
+}
+
+func TestExtractLayerAppliesValidWhiteout(t *testing.T) {
+	restore := t.TempDir()
+	mustWrite(t, filepath.Join(restore, "agent", "workspace", "remove.txt"), "remove\n")
+	layer := rawLayer(t, func(tw *tar.Writer) {
+		if err := tw.WriteHeader(&tar.Header{
+			Name:     "agent/workspace/.wh.remove.txt",
+			Typeflag: tar.TypeReg,
+			Mode:     0,
+			Size:     0,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	if err := extractLayer(layer, restore); err != nil {
+		t.Fatal(err)
+	}
+	assertMissing(t, filepath.Join(restore, "agent", "workspace", "remove.txt"))
+}
+
 func TestAgeEncryptedSnapshotRestore(t *testing.T) {
 	root := t.TempDir()
 	identity, err := age.GenerateX25519Identity()
