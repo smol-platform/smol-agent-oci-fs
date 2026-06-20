@@ -131,6 +131,10 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
                 reply(resolveItem(parentPath(currentDirectory.relativePath)) ?? root, FSFileName(string: ".."), nil)
                 return
             }
+            guard let rawName = validName(name) else {
+                reply(nil, nil, posixError(EINVAL))
+                return
+            }
             let relativePath = joinRelative(currentDirectory.relativePath, rawName)
             guard let item = resolveItem(relativePath) else {
                 reply(nil, nil, posixError(ENOENT))
@@ -924,7 +928,8 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
               !string.isEmpty,
               string != ".",
               string != "..",
-              !string.contains("/") else {
+              !string.contains("/"),
+              !string.contains("\0") else {
             return nil
         }
         return string

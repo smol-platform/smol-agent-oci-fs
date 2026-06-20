@@ -442,6 +442,11 @@ struct VolumeMetadataSmoke {
             type: .directory,
             source: .lower
         )
+        do {
+            _ = try lookupItem(volume: volume, name: FSFileName(string: "file.txt/.."), directory: workspace)
+            throw SmokeError("lookupItem accepted slash-containing name")
+        } catch let error as NSError where error.domain == NSPOSIXErrorDomain && error.code == Int(EINVAL) {
+        }
         let mismatchedRemoveHandle = OSIxItem(relativePath: staleDeletePath, physicalPath: lowerDeleteFile, type: .file, source: .lower)
         try removeItem(volume: volume, item: mismatchedRemoveHandle, name: FSFileName(string: "name-boundary-remove.txt"), directory: workspace)
         guard FileManager.default.fileExists(atPath: upperNameBoundaryRemoveWhiteout),
