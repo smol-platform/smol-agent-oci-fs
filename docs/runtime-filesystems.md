@@ -116,17 +116,21 @@ OSIX_FSKIT_CODESIGN_IDENTITY="Apple Development: Example Developer (TEAMID)" \
 The installer builds the helper and app, copies the app into `~/Applications`,
 registers the embedded extension with PlugInKit, elects it for the current user,
 and runs `osix-fskitctl doctor`. If doctor says FSClient does not report the
-module enabled, finish enablement in System Settings > General > Login Items &
-Extensions > File System Extensions. Interactive installs open that settings
-pane automatically on a failed doctor check; pass `--no-open-settings` to keep
-the install fully noninteractive or `--open-settings` to force the settings pane
-after a failed readiness check.
+module enabled, finish enablement in System Settings > Login Items & Extensions
+> OSIxFSKitHost Extensions > FSKit Modules. Interactive installs open System
+Settings automatically on a failed doctor check; pass `--no-open-settings` to
+keep the install fully noninteractive or `--open-settings` to force System
+Settings after a failed readiness check.
 
 PlugInKit registration and election only make the embedded extension
 discoverable to the system. They are not the same as FSKit runtime enablement.
 The public FSKit `FSClient` API only exposes installed module identities and
 their enabled state; it does not provide a public API for enabling a file system
 extension. Enablement is handled by System Settings.
+
+If the System Settings search field does not find "File System Extensions",
+search for "Login Items", open Login Items & Extensions, then click Show Detail
+next to OSIxFSKitHost and enable the FSKit Modules switch.
 
 The integration harness uses `--no-open --background-register` to launch the
 host app hidden long enough for ExtensionKit/PlugInKit discovery without

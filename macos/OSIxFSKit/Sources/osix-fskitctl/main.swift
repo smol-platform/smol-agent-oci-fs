@@ -4,6 +4,7 @@ import FSKit
 
 let defaultBundleID = "io.github.smol-platform.smol-agent-oci-fs.fskit.extension"
 let defaultFileSystemType = "OSIxFS"
+let fileSystemExtensionSettingsPath = "System Settings > Login Items & Extensions > OSIxFSKitHost Extensions > FSKit Modules"
 
 struct CLIError: Error, CustomStringConvertible {
     let message: String
@@ -230,7 +231,7 @@ struct OSIxFSKitControl {
         guard let module = modules.first(where: { $0.bundleIdentifier == bundleID }) else {
             if let plugInKitState = try? plugInKitRegistrationState(bundleID: bundleID) {
                 throw CLIError(
-                    message: "FSKit extension \(bundleID) is \(plugInKitState) but FSClient does not report it as enabled. PlugInKit registration is not FSKit runtime enablement; the public FSClient API only reports modules after FSKit enablement. Enable it in System Settings > General > Login Items & Extensions > File System Extensions.",
+                    message: "FSKit extension \(bundleID) is \(plugInKitState) but FSClient does not report it as enabled. PlugInKit registration is not FSKit runtime enablement; the public FSClient API only reports modules after FSKit enablement. Enable it in \(fileSystemExtensionSettingsPath).",
                     code: 69
                 )
             }
@@ -239,7 +240,7 @@ struct OSIxFSKitControl {
         guard module.isEnabled else {
             let plugInKitState = (try? plugInKitRegistrationState(bundleID: bundleID)) ?? "installed"
             throw CLIError(
-                message: "FSKit extension \(bundleID) is \(plugInKitState) but not enabled for FSKit. PlugInKit registration is not FSKit runtime enablement; enable it in System Settings > General > Login Items & Extensions > File System Extensions.",
+                message: "FSKit extension \(bundleID) is \(plugInKitState) but not enabled for FSKit. PlugInKit registration is not FSKit runtime enablement; enable it in \(fileSystemExtensionSettingsPath).",
                 code: 69
             )
         }

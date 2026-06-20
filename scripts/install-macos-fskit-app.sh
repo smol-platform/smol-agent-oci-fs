@@ -19,6 +19,7 @@ background_registration_launch=0
 wait_ready_seconds=0
 open_settings_on_failure=auto
 settings_url="x-apple.systempreferences:com.apple.LoginItems-Settings.extension"
+settings_path="System Settings > Login Items & Extensions > OSIxFSKitHost Extensions > FSKit Modules"
 
 verify_installed_app() {
   if [[ ! -d "${target_app}" ]]; then
@@ -192,7 +193,7 @@ if [[ "${register_after_install}" -eq 1 && -x "${helper}" ]]; then
   if [[ "${ready}" -eq 1 ]]; then
     "${helper}" doctor --bundle-id "${bundle_id}" --fstype "${fs_type}"
   elif ! "${helper}" doctor --bundle-id "${bundle_id}" --fstype "${fs_type}"; then
-    echo "enable the OSIx FSKit extension in System Settings > General > Login Items & Extensions > File System Extensions"
+    echo "enable the OSIx FSKit extension in ${settings_path}"
     echo "settings URL: ${settings_url}"
     if [[ "${open_settings_on_failure}" == "1" || ( "${open_settings_on_failure}" == "auto" && "${open_after_install}" -eq 1 ) ]]; then
       /usr/bin/open "${settings_url}" >/dev/null 2>&1 || {

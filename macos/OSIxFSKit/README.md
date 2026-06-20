@@ -75,13 +75,16 @@ extension ready.
 
 PlugInKit registration is not the same as FSKit runtime enablement. If doctor
 reports that FSClient does not see an enabled module, enable the extension in
-System Settings > General > Login Items & Extensions > File System Extensions.
-Use `--open-settings` to force opening that settings pane after a failed doctor
-check, or `--no-open-settings` to suppress it in scripted setup.
+System Settings > Login Items & Extensions > OSIxFSKitHost Extensions > FSKit
+Modules. Use `--open-settings` to force opening System Settings after a failed
+doctor check, or `--no-open-settings` to suppress it in scripted setup.
 
 The public FSKit `FSClient` API exposes installed module identities and their
 enabled state, but it does not expose an API to enable a file system extension.
 The System Settings File System Extensions pane owns that user approval step.
+If System Settings search does not find "File System Extensions", search for
+"Login Items", open Login Items & Extensions, click Show Detail next to
+OSIxFSKitHost, and enable the FSKit Modules switch.
 
 Distribution requires a Developer ID or App Store signing identity and an
 approved FSKit entitlement profile. The same `OSIX_FSKIT_CODESIGN_IDENTITY`
