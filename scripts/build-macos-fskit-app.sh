@@ -10,6 +10,9 @@ appex_bundle="${app_bundle}/Contents/PlugIns/OSIxFSKitExtension.appex"
 host_bin="${app_bundle}/Contents/MacOS/OSIxFSKitHost"
 extension_bin="${appex_bundle}/Contents/MacOS/OSIxFSKitExtension"
 codesign_identity="${OSIX_FSKIT_CODESIGN_IDENTITY:--}"
+expected_host_bundle_id="io.github.smol-platform.smol-agent-oci-fs.fskit.host"
+expected_extension_bundle_id="io.github.smol-platform.smol-agent-oci-fs.fskit.extension"
+expected_fs_type="OSIxFS"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "FSKit app build requires Darwin; current OS is $(uname -s)" >&2
@@ -64,8 +67,26 @@ codesign --force --sign "${codesign_identity}" \
 
 codesign -dvvv --entitlements "${build_root}/extension-entitlements.plist" "${appex_bundle}" >/dev/null
 grep -q "com.apple.developer.fskit.fsmodule" "${build_root}/extension-entitlements.plist"
+codesign --verify --strict "${appex_bundle}"
+codesign --verify --strict "${app_bundle}"
 plutil -lint \
   "${app_bundle}/Contents/Info.plist" \
   "${appex_bundle}/Contents/Info.plist"
+host_bundle_id="$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "${app_bundle}/Contents/Info.plist")"
+extension_bundle_id="$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "${appex_bundle}/Contents/Info.plist")"
+fs_short_name="$(/usr/libexec/PlistBuddy -c "Print :EXAppExtensionAttributes:FSShortName" "${appex_bundle}/Contents/Info.plist")"
+fs_personality_name="$(/usr/libexec/PlistBuddy -c "Print :EXAppExtensionAttributes:FSPersonalities:OSIxFSPersonality:FSName" "${appex_bundle}/Contents/Info.plist")"
+if [[ "${host_bundle_id}" != "${expected_host_bundle_id}" ]]; then
+  echo "host bundle id ${host_bundle_id} does not match ${expected_host_bundle_id}" >&2
+  exit 1
+fi
+if [[ "${extension_bundle_id}" != "${expected_extension_bundle_id}" ]]; then
+  echo "extension bundle id ${extension_bundle_id} does not match ${expected_extension_bundle_id}" >&2
+  exit 1
+fi
+if [[ "${fs_short_name}" != "${expected_fs_type}" || "${fs_personality_name}" != "${expected_fs_type}" ]]; then
+  echo "extension filesystem type does not declare ${expected_fs_type}" >&2
+  exit 1
+fi
 echo "built ${app_bundle}"
 echo "signed ${app_bundle} and embedded extension with ${codesign_identity}"
