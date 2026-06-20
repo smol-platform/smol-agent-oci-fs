@@ -791,8 +791,12 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
         if itemExists(at: target) {
             return target
         }
-        try fileManager.createDirectory(atPath: parentFilesystemPath(target), withIntermediateDirectories: true)
-        if current.source == .lower {
+        guard current.source == .lower else {
+            throw posixError(ENOENT)
+        }
+        let existingUpperParent = nearestExistingUpperParent(for: item.relativePath)
+        do {
+            try fileManager.createDirectory(atPath: parentFilesystemPath(target), withIntermediateDirectories: true)
             if current.type == .directory {
                 try fileManager.createDirectory(atPath: target, withIntermediateDirectories: false)
                 try copyDirectoryMetadata(from: current.physicalPath, to: target)
@@ -800,8 +804,10 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
             }
             try fileManager.copyItem(atPath: current.physicalPath, toPath: target)
             return target
+        } catch {
+            removeCreatedUpperItemAndEmptyParents(item.relativePath, stoppingAt: existingUpperParent)
+            throw error
         }
-        throw posixError(ENOENT)
     }
 
     private func hasUpperItem(for relativePath: String) -> Bool {

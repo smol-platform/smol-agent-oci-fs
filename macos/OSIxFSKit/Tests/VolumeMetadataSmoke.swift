@@ -28,6 +28,7 @@ struct VolumeMetadataSmoke {
         let cowRenameDestinationPath = "agent/workspace/cow-renamed.txt"
         let writePath = "agent/workspace/write-me.txt"
         let absentXattrPath = "agent/workspace/absent-xattr.txt"
+        let copyFailurePath = "agent/copy-failure/unreadable.txt"
         let oversizedXattrPath = "agent/xattr-rollback/too-large.txt"
         let existingParentXattrPath = "agent/existing-upper-parent/too-long-name.txt"
         let replaceWhiteoutPath = "agent/workspace/replace-whiteout.txt"
@@ -66,6 +67,7 @@ struct VolumeMetadataSmoke {
         let lowerCOWRenameFile = URL(fileURLWithPath: lower).appendingPathComponent(cowRenamePath).path
         let lowerWriteFile = URL(fileURLWithPath: lower).appendingPathComponent(writePath).path
         let lowerAbsentXattrFile = URL(fileURLWithPath: lower).appendingPathComponent(absentXattrPath).path
+        let lowerCopyFailureFile = URL(fileURLWithPath: lower).appendingPathComponent(copyFailurePath).path
         let lowerOversizedXattrFile = URL(fileURLWithPath: lower).appendingPathComponent(oversizedXattrPath).path
         let lowerExistingParentXattrFile = URL(fileURLWithPath: lower).appendingPathComponent(existingParentXattrPath).path
         let lowerReplaceWhiteoutFile = URL(fileURLWithPath: lower).appendingPathComponent(replaceWhiteoutPath).path
@@ -120,6 +122,8 @@ struct VolumeMetadataSmoke {
         let upperCOWRenameWhiteout = URL(fileURLWithPath: upper).appendingPathComponent("agent/workspace/.wh.cow-rename.txt").path
         let upperWriteFile = URL(fileURLWithPath: upper).appendingPathComponent(writePath).path
         let upperAbsentXattrFile = URL(fileURLWithPath: upper).appendingPathComponent(absentXattrPath).path
+        let upperCopyFailureFile = URL(fileURLWithPath: upper).appendingPathComponent(copyFailurePath).path
+        let upperCopyFailureDirectory = URL(fileURLWithPath: upper).appendingPathComponent("agent/copy-failure").path
         let upperOversizedXattrFile = URL(fileURLWithPath: upper).appendingPathComponent(oversizedXattrPath).path
         let upperOversizedXattrDirectory = URL(fileURLWithPath: upper).appendingPathComponent("agent/xattr-rollback").path
         let upperExistingParentXattrFile = URL(fileURLWithPath: upper).appendingPathComponent(existingParentXattrPath).path
@@ -163,6 +167,11 @@ struct VolumeMetadataSmoke {
         try Data("cow-rename".utf8).write(to: URL(fileURLWithPath: lowerCOWRenameFile))
         try Data("write".utf8).write(to: URL(fileURLWithPath: lowerWriteFile))
         try Data("absent xattr".utf8).write(to: URL(fileURLWithPath: lowerAbsentXattrFile))
+        try FileManager.default.createDirectory(atPath: URL(fileURLWithPath: lowerCopyFailureFile).deletingLastPathComponent().path, withIntermediateDirectories: true)
+        try Data("copy failure".utf8).write(to: URL(fileURLWithPath: lowerCopyFailureFile))
+        guard chmod(lowerCopyFailureFile, 0) == 0 else {
+            throw SmokeError("failed to prepare unreadable copy-up fixture")
+        }
         try FileManager.default.createDirectory(atPath: URL(fileURLWithPath: lowerOversizedXattrFile).deletingLastPathComponent().path, withIntermediateDirectories: true)
         try Data("oversized xattr".utf8).write(to: URL(fileURLWithPath: lowerOversizedXattrFile))
         try FileManager.default.createDirectory(atPath: URL(fileURLWithPath: lowerExistingParentXattrFile).deletingLastPathComponent().path, withIntermediateDirectories: true)
@@ -263,6 +272,9 @@ struct VolumeMetadataSmoke {
             throw SmokeError("reply attributes do not reflect upper metadata")
         }
         if getuid() != 0 {
+            defer {
+                chmod(lowerCopyFailureFile, 0o644)
+            }
             let failedAttributesItem = OSIxItem(relativePath: failedAttributesPath, physicalPath: lowerFailedAttributesFile, type: .file, source: .lower)
             let failedAttributesRequest = FSItem.SetAttributesRequest()
             failedAttributesRequest.uid = 0
@@ -274,6 +286,18 @@ struct VolumeMetadataSmoke {
             guard !itemExistsNoFollow(upperFailedAttributesFile),
                   (try? String(contentsOfFile: lowerFailedAttributesFile, encoding: .utf8)) == "failed attrs" else {
                 throw SmokeError("failed setAttributes left upper copy or changed lower file")
+            }
+            let copyFailureItem = OSIxItem(relativePath: copyFailurePath, physicalPath: lowerCopyFailureFile, type: .file, source: .lower)
+            let copyFailureRequest = FSItem.SetAttributesRequest()
+            copyFailureRequest.mode = 0o600
+            do {
+                _ = try setAttributes(volume: volume, request: copyFailureRequest, item: copyFailureItem)
+                throw SmokeError("setAttributes unexpectedly copied unreadable lower file")
+            } catch let error as NSError where error.domain == NSPOSIXErrorDomain || error.domain == NSCocoaErrorDomain {
+            }
+            guard !itemExistsNoFollow(upperCopyFailureFile),
+                  !FileManager.default.fileExists(atPath: upperCopyFailureDirectory) else {
+                throw SmokeError("failed copy-up left upper copy or parent state")
             }
         }
 
