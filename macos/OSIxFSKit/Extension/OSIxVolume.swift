@@ -183,7 +183,9 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
             }
             try fileManager.createDirectory(atPath: parentFilesystemPath(target), withIntermediateDirectories: true)
             let stashedHiddenUpperItem = try stashHiddenUpperItemIfWhitedOut(relativePath)
+            let whiteoutExisted = hasWhiteout(for: relativePath)
             var createdTarget = false
+            var removedWhiteout = false
             do {
                 switch type {
                 case .directory:
@@ -198,14 +200,18 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
                     throw posixError(ENOTSUP)
                 }
                 _ = try applyAttributes(newAttributes, to: target, itemType: type)
-                try discardStashedHiddenUpperItem(stashedHiddenUpperItem)
                 removeWhiteout(for: relativePath)
+                removedWhiteout = whiteoutExisted
                 let item = resolveItem(relativePath)
                 try flushDirtyIndex()
+                try discardStashedHiddenUpperItem(stashedHiddenUpperItem)
                 reply(item, FSFileName(string: rawName), item == nil ? posixError(ENOENT) : nil)
             } catch {
                 if createdTarget {
                     removeCreatedUpperItemAndEmptyParents(relativePath, stoppingAt: existingUpperParent)
+                }
+                if removedWhiteout {
+                    try createWhiteout(for: relativePath)
                 }
                 try restoreStashedHiddenUpperItem(stashedHiddenUpperItem)
                 throw error
@@ -234,19 +240,25 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
             }
             try fileManager.createDirectory(atPath: parentFilesystemPath(target), withIntermediateDirectories: true)
             let stashedHiddenUpperItem = try stashHiddenUpperItemIfWhitedOut(relativePath)
+            let whiteoutExisted = hasWhiteout(for: relativePath)
             var createdTarget = false
+            var removedWhiteout = false
             do {
                 try fileManager.createSymbolicLink(atPath: target, withDestinationPath: destination)
                 createdTarget = true
                 _ = try applyAttributes(newAttributes, to: target, itemType: .symlink)
-                try discardStashedHiddenUpperItem(stashedHiddenUpperItem)
                 removeWhiteout(for: relativePath)
+                removedWhiteout = whiteoutExisted
                 let item = resolveItem(relativePath)
                 try flushDirtyIndex()
+                try discardStashedHiddenUpperItem(stashedHiddenUpperItem)
                 reply(item, FSFileName(string: rawName), item == nil ? posixError(ENOENT) : nil)
             } catch {
                 if createdTarget {
                     removeCreatedUpperItemAndEmptyParents(relativePath, stoppingAt: existingUpperParent)
+                }
+                if removedWhiteout {
+                    try createWhiteout(for: relativePath)
                 }
                 try restoreStashedHiddenUpperItem(stashedHiddenUpperItem)
                 throw error

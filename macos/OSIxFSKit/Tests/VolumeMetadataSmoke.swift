@@ -39,6 +39,7 @@ struct VolumeMetadataSmoke {
         let replaceHiddenWhiteoutPath = "agent/workspace/replace-hidden-whiteout.txt"
         let rollbackWhiteoutPath = "agent/workspace/rollback-whiteout.txt"
         let rollbackHiddenWhiteoutPath = "agent/workspace/rollback-hidden-whiteout.txt"
+        let createFlushRollbackHiddenWhiteoutPath = "agent/workspace/create-flush-rollback-hidden-whiteout.txt"
         let selfRenamePath = "agent/workspace/self-rename.txt"
         let renameOverLowerDirectorySourcePath = "agent/workspace/rename-over-lower-dir-source.txt"
         let renameOverLowerDirectoryDestinationPath = "agent/workspace/rename-over-lower-dir-dest"
@@ -149,6 +150,8 @@ struct VolumeMetadataSmoke {
         let upperRollbackWhiteout = URL(fileURLWithPath: upper).appendingPathComponent("agent/workspace/.wh.rollback-whiteout.txt").path
         let upperRollbackHiddenWhiteoutFile = URL(fileURLWithPath: upper).appendingPathComponent(rollbackHiddenWhiteoutPath).path
         let upperRollbackHiddenWhiteout = URL(fileURLWithPath: upper).appendingPathComponent("agent/workspace/.wh.rollback-hidden-whiteout.txt").path
+        let upperCreateFlushRollbackHiddenWhiteoutFile = URL(fileURLWithPath: upper).appendingPathComponent(createFlushRollbackHiddenWhiteoutPath).path
+        let upperCreateFlushRollbackHiddenWhiteout = URL(fileURLWithPath: upper).appendingPathComponent("agent/workspace/.wh.create-flush-rollback-hidden-whiteout.txt").path
         let upperSelfRenameFile = URL(fileURLWithPath: upper).appendingPathComponent(selfRenamePath).path
         let upperSelfRenameWhiteout = URL(fileURLWithPath: upper).appendingPathComponent("agent/workspace/.wh.self-rename.txt").path
         let upperRenameOverLowerDirectorySource = URL(fileURLWithPath: upper).appendingPathComponent(renameOverLowerDirectorySourcePath).path
@@ -235,6 +238,8 @@ struct VolumeMetadataSmoke {
         FileManager.default.createFile(atPath: upperRollbackWhiteout, contents: Data())
         FileManager.default.createFile(atPath: upperRollbackHiddenWhiteout, contents: Data())
         try Data("hidden rollback".utf8).write(to: URL(fileURLWithPath: upperRollbackHiddenWhiteoutFile))
+        FileManager.default.createFile(atPath: upperCreateFlushRollbackHiddenWhiteout, contents: Data())
+        try Data("hidden create flush rollback".utf8).write(to: URL(fileURLWithPath: upperCreateFlushRollbackHiddenWhiteoutFile))
         FileManager.default.createFile(atPath: upperRenameHiddenRollbackDestinationWhiteout, contents: Data())
         try Data("hidden rename rollback".utf8).write(to: URL(fileURLWithPath: upperRenameHiddenRollbackDestination))
         try FileManager.default.createDirectory(atPath: URL(fileURLWithPath: removedDirectoryWhiteout).deletingLastPathComponent().path, withIntermediateDirectories: true)
@@ -400,6 +405,25 @@ struct VolumeMetadataSmoke {
         }
         guard !FileManager.default.fileExists(atPath: upperStaleCreate) else {
             throw SmokeError("createItem wrote into a stale whiteouted lower directory")
+        }
+        try? FileManager.default.removeItem(atPath: dirtyFile)
+        try FileManager.default.createDirectory(atPath: dirtyFile, withIntermediateDirectories: false)
+        do {
+            let flushFailureRequest = FSItem.SetAttributesRequest()
+            flushFailureRequest.size = 3
+            try createItem(volume: volume, name: FSFileName(string: "create-flush-rollback-hidden-whiteout.txt"), type: .file, directory: workspaceItem(lower: lower, relativePath: "agent/workspace"), attributes: flushFailureRequest)
+            throw SmokeError("createItem over hidden whiteout succeeded despite dirty flush failure")
+        } catch let error as NSError where error.domain == NSPOSIXErrorDomain || error.domain == NSCocoaErrorDomain {
+        }
+        try FileManager.default.removeItem(atPath: dirtyFile)
+        guard (try? String(contentsOfFile: upperCreateFlushRollbackHiddenWhiteoutFile, encoding: .utf8)) == "hidden create flush rollback",
+              FileManager.default.fileExists(atPath: upperCreateFlushRollbackHiddenWhiteout) else {
+            throw SmokeError("failed createItem flush rollback did not restore hidden upper state")
+        }
+        do {
+            _ = try lookupItem(volume: volume, name: FSFileName(string: "create-flush-rollback-hidden-whiteout.txt"), directory: workspaceItem(lower: lower, relativePath: "agent/workspace"))
+            throw SmokeError("failed createItem flush rollback exposed hidden upper item")
+        } catch let error as NSError where error.domain == NSPOSIXErrorDomain && error.code == Int(ENOENT) {
         }
         if getuid() != 0 {
             let failingCreateRequest = FSItem.SetAttributesRequest()
