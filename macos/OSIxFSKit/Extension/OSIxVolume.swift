@@ -1244,8 +1244,8 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
         guard itemExists(at: target) else {
             return nil
         }
-        let stashedPath = target + ".osix-hidden-" + UUID().uuidString
-        try fileManager.moveItem(atPath: target, toPath: stashedPath)
+        let stashedPath = try stagingPath(kind: "hidden")
+        try stashItem(atPath: target, toPath: stashedPath)
         return StashedHiddenUpperItem(originalPath: target, stashedPath: stashedPath)
     }
 
@@ -1257,8 +1257,8 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
         guard itemExists(at: target) else {
             return nil
         }
-        let stashedPath = target + ".osix-stash-" + UUID().uuidString
-        try fileManager.moveItem(atPath: target, toPath: stashedPath)
+        let stashedPath = try stagingPath(kind: "stash")
+        try stashItem(atPath: target, toPath: stashedPath)
         return StashedHiddenUpperItem(originalPath: target, stashedPath: stashedPath)
     }
 
@@ -1270,9 +1270,23 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
         guard itemExists(at: target) else {
             return nil
         }
-        let stashedPath = target + ".osix-backup-" + UUID().uuidString
+        let stashedPath = try stagingPath(kind: "backup")
         try fileManager.copyItem(atPath: target, toPath: stashedPath)
         return StashedHiddenUpperItem(originalPath: target, stashedPath: stashedPath)
+    }
+
+    private func stagingPath(kind: String) throws -> String {
+        guard let work = mountOptions?.work else {
+            throw posixError(EINVAL)
+        }
+        let directory = URL(fileURLWithPath: work).appendingPathComponent(".osix-staging").path
+        try fileManager.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        return URL(fileURLWithPath: directory).appendingPathComponent("\(kind)-\(UUID().uuidString)").path
+    }
+
+    private func stashItem(atPath source: String, toPath destination: String) throws {
+        try fileManager.copyItem(atPath: source, toPath: destination)
+        try fileManager.removeItem(atPath: source)
     }
 
     private func discardStashedHiddenUpperItem(_ item: StashedHiddenUpperItem?) throws {
@@ -1289,7 +1303,9 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
         if itemExists(at: item.originalPath) {
             try fileManager.removeItem(atPath: item.originalPath)
         }
-        try fileManager.moveItem(atPath: item.stashedPath, toPath: item.originalPath)
+        try fileManager.createDirectory(atPath: parentFilesystemPath(item.originalPath), withIntermediateDirectories: true)
+        try fileManager.copyItem(atPath: item.stashedPath, toPath: item.originalPath)
+        try fileManager.removeItem(atPath: item.stashedPath)
     }
 
     private func lowerItemExists(_ relativePath: String) -> Bool {

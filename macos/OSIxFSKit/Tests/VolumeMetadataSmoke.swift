@@ -1216,6 +1216,9 @@ struct VolumeMetadataSmoke {
 
         let dirtyData = try Data(contentsOf: URL(fileURLWithPath: dirtyFile))
         let dirty = try JSONDecoder().decode(DirtyOutput.self, from: dirtyData)
+        guard !dirty.paths.keys.contains(where: { $0.contains(".osix-stash-") || $0.contains(".osix-backup-") || $0.contains(".osix-hidden-") }) else {
+            throw SmokeError("dirty index leaked internal FSKit staging path")
+        }
         guard dirty.paths[relativePath] == "modified" else {
             throw SmokeError("dirty index did not mark \(relativePath) modified")
         }
