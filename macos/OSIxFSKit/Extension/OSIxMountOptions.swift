@@ -55,20 +55,23 @@ struct OSIxMountOptions {
         }
 
         try validateDirectory(path: workspace!, option: "osix.workspace")
-        try validateDirectory(path: lower!, option: "osix.lower")
-        try validateDirectory(path: upper!, option: "osix.upper")
-        try validateDirectory(path: work!, option: "osix.work")
+        try validateDirectory(path: lower!, option: "osix.lower", rejectWorldWritable: true)
+        try validateDirectory(path: upper!, option: "osix.upper", rejectWorldWritable: true)
+        try validateDirectory(path: work!, option: "osix.work", rejectWorldWritable: true)
         try validateRuntimeDirectoriesAreDisjoint()
         try validateSourceDigest(sourceDigest!)
     }
 
-    private func validateDirectory(path: String, option: String) throws {
+    private func validateDirectory(path: String, option: String, rejectWorldWritable: Bool = false) throws {
         var statBuffer = stat()
         guard lstat(path, &statBuffer) == 0 else {
             throw OSIxMountOptionsValidationError(description: "\(option) \(path) is unavailable: \(String(cString: strerror(errno)))")
         }
         guard statBuffer.st_mode & S_IFMT == S_IFDIR else {
             throw OSIxMountOptionsValidationError(description: "\(option) \(path) is not a directory")
+        }
+        if rejectWorldWritable, statBuffer.st_mode & mode_t(S_IWOTH) != 0 {
+            throw OSIxMountOptionsValidationError(description: "refusing world-writable runtime directory \(option) \(path)")
         }
     }
 

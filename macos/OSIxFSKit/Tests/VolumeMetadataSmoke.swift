@@ -1187,6 +1187,18 @@ struct VolumeMetadataSmoke {
         } catch is OSIxMountOptionsValidationError {
         }
 
+        guard chmod(upper, 0o777) == 0 else {
+            throw SmokeError("failed to prepare world-writable upperdir fixture")
+        }
+        do {
+            try OSIxMountOptions(bundle: nil, workspace: work, sourceRef: "snap-000001", sourceDigest: validDigest, lower: lower, upper: upper, work: work, mode: "overlay").validateForMount()
+            throw SmokeError("mount options accepted world-writable upperdir")
+        } catch is OSIxMountOptionsValidationError {
+        }
+        guard chmod(upper, 0o700) == 0 else {
+            throw SmokeError("failed to restore upperdir permissions")
+        }
+
         do {
             try OSIxMountOptions(bundle: nil, workspace: work, sourceRef: "snap-000001", sourceDigest: "sha256:digest", lower: lower, upper: upper, work: work, mode: "materialized").validateForMount()
             throw SmokeError("mount options accepted unsupported mode")
