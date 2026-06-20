@@ -9,6 +9,7 @@ app_bundle="${dist_root}/OSIxFSKitHost.app"
 appex_bundle="${app_bundle}/Contents/PlugIns/OSIxFSKitExtension.appex"
 host_bin="${app_bundle}/Contents/MacOS/OSIxFSKitHost"
 extension_bin="${appex_bundle}/Contents/MacOS/OSIxFSKitExtension"
+codesign_identity="${OSIX_FSKIT_CODESIGN_IDENTITY:--}"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "FSKit app build requires Darwin; current OS is $(uname -s)" >&2
@@ -54,10 +55,10 @@ xcrun swiftc \
   "${source_root}/Extension/OSIxMountOptions.swift" \
   "${source_root}/Extension/OSIxVolume.swift"
 
-codesign --force --sign - \
+codesign --force --sign "${codesign_identity}" \
   --entitlements "${source_root}/Extension/OSIxFSKitExtension.entitlements" \
   "${appex_bundle}"
-codesign --force --sign - \
+codesign --force --sign "${codesign_identity}" \
   --entitlements "${source_root}/App/OSIxFSKitHost.entitlements" \
   "${app_bundle}"
 
@@ -67,3 +68,4 @@ plutil -lint \
   "${app_bundle}/Contents/Info.plist" \
   "${appex_bundle}/Contents/Info.plist"
 echo "built ${app_bundle}"
+echo "signed ${app_bundle} and embedded extension with ${codesign_identity}"

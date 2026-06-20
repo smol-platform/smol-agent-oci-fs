@@ -42,6 +42,14 @@ The app bundle is written to `.osix-tools/dist/macos/OSIxFSKitHost.app` by
 default. Override this with `OSIX_FSKIT_DIST_DIR` when packaging to another
 location.
 
+Local builds are ad-hoc signed by default. To build the host app and embedded
+extension with an Apple signing identity, set `OSIX_FSKIT_CODESIGN_IDENTITY`:
+
+```sh
+OSIX_FSKIT_CODESIGN_IDENTITY="Apple Development: Example Developer (TEAMID)" \
+  ./scripts/build-macos-fskit-app.sh
+```
+
 Install the host app into `~/Applications` and launch it for local development:
 
 ```sh
@@ -71,9 +79,10 @@ System Settings > General > Login Items & Extensions > File System Extensions.
 Use `--open-settings` to force opening that settings pane after a failed doctor
 check, or `--no-open-settings` to suppress it in scripted setup.
 
-The app and extension are ad-hoc signed for local development. Distribution
-requires a Developer ID or App Store signing identity and an approved FSKit
-entitlement profile.
+Distribution requires a Developer ID or App Store signing identity and an
+approved FSKit entitlement profile. The same `OSIX_FSKIT_CODESIGN_IDENTITY`
+setting is honored by `install-macos-fskit-app.sh` because it delegates to the
+app build script.
 
 ## Runtime Contract
 

@@ -104,6 +104,15 @@ Install the local host app plus embedded File System extension:
 ./scripts/install-macos-fskit-app.sh
 ```
 
+Local builds are ad-hoc signed by default. To use a real Apple signing identity
+for the host app and embedded extension, set `OSIX_FSKIT_CODESIGN_IDENTITY`
+before running the build or install script:
+
+```sh
+OSIX_FSKIT_CODESIGN_IDENTITY="Apple Development: Example Developer (TEAMID)" \
+  ./scripts/install-macos-fskit-app.sh
+```
+
 The installer builds the helper and app, copies the app into `~/Applications`,
 registers the embedded extension with PlugInKit, elects it for the current user,
 and runs `osix-fskitctl doctor`. If doctor says FSClient does not report the
