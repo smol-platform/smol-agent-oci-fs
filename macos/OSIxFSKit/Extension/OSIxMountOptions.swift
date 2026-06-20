@@ -15,13 +15,37 @@ struct OSIxMountOptions {
     let upper: String?
     let work: String?
     let mode: String?
+    let malformedOptions: [String]
+
+    init(
+        bundle: String?,
+        workspace: String?,
+        sourceRef: String?,
+        sourceDigest: String?,
+        lower: String?,
+        upper: String?,
+        work: String?,
+        mode: String?,
+        malformedOptions: [String] = []
+    ) {
+        self.bundle = bundle
+        self.workspace = workspace
+        self.sourceRef = sourceRef
+        self.sourceDigest = sourceDigest
+        self.lower = lower
+        self.upper = upper
+        self.work = work
+        self.mode = mode
+        self.malformedOptions = malformedOptions
+    }
 
     static func parse(_ options: FSTaskOptions) -> OSIxMountOptions {
         parseTaskOptions(options.taskOptions)
     }
 
     static func parseTaskOptions(_ taskOptions: [String]) -> OSIxMountOptions {
-        let values = parseKeyValues(taskOptions)
+        let parsed = parseKeyValues(taskOptions)
+        let values = parsed.values
         return OSIxMountOptions(
             bundle: values["bundle"],
             workspace: values["workspace"],
@@ -30,11 +54,17 @@ struct OSIxMountOptions {
             lower: values["lower"],
             upper: values["upper"],
             work: values["work"],
-            mode: values["mode"]
+            mode: values["mode"],
+            malformedOptions: parsed.malformedOptions.sorted()
         )
     }
 
     func validateForMount() throws {
+        if !malformedOptions.isEmpty {
+            let options = malformedOptions.map { "osix.\($0)" }.joined(separator: ", ")
+            throw OSIxMountOptionsValidationError(description: "malformed encoded mount option \(options)")
+        }
+
         for (key, value) in [
             ("workspace", workspace),
             ("source_ref", sourceRef),
@@ -112,25 +142,26 @@ struct OSIxMountOptions {
         }
     }
 
-    private static func parseKeyValues(_ taskOptions: [String]) -> [String: String] {
+    private static func parseKeyValues(_ taskOptions: [String]) -> (values: [String: String], malformedOptions: Set<String>) {
         var values: [String: String] = [:]
+        var malformedOptions = Set<String>()
         var index = 0
         while index < taskOptions.count {
             let option = taskOptions[index]
             if option == "-o", index + 1 < taskOptions.count {
-                merge(optionString: taskOptions[index + 1], into: &values)
+                merge(optionString: taskOptions[index + 1], into: &values, malformedOptions: &malformedOptions)
                 index += 2
                 continue
             }
             if option.hasPrefix("osix.") {
-                merge(optionString: option, into: &values)
+                merge(optionString: option, into: &values, malformedOptions: &malformedOptions)
             }
             index += 1
         }
-        return values
+        return (values, malformedOptions)
     }
 
-    private static func merge(optionString: String, into values: inout [String: String]) {
+    private static func merge(optionString: String, into values: inout [String: String], malformedOptions: inout Set<String>) {
         for rawPair in optionString.split(separator: ",") {
             let pair = rawPair.split(separator: "=", maxSplits: 1).map(String.init)
             guard pair.count == 2, pair[0].hasPrefix("osix.") else {
@@ -139,6 +170,8 @@ struct OSIxMountOptions {
             let key = String(pair[0].dropFirst("osix.".count))
             if let decoded = decodeBase64URL(pair[1]) {
                 values[key] = decoded
+            } else {
+                malformedOptions.insert(key)
             }
         }
     }

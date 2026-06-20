@@ -1257,7 +1257,10 @@ struct VolumeMetadataSmoke {
         do {
             try malformedEncoded.validateForMount()
             throw SmokeError("mount options accepted malformed encoded workspace option")
-        } catch is OSIxMountOptionsValidationError {
+        } catch let error as OSIxMountOptionsValidationError {
+            guard error.description.contains("malformed encoded mount option osix.workspace") else {
+                throw SmokeError("malformed mount option error lost option name: \(error.description)")
+            }
         }
 
         try OSIxMountOptions(
