@@ -78,6 +78,32 @@ osix snapshot ./agentfs \
   --also-tag latest
 ```
 
+### Push
+
+```text
+osix push main ghcr.io/acme/agent-state/research-agent-a
+osix push snap-000004 --tag latest
+```
+
+Push uploads the selected snapshot manifest, config blob, layer blobs, and
+reachable parent chain to the configured OCI repository. If `REGISTRY/REPO` is
+omitted, the workspace `stateRef` repository is used. Digest refs are published
+under their snapshot id unless `--tag` is supplied; mutable local refs are also
+published as the same remote tag by default.
+
+### Pull
+
+```text
+osix pull ghcr.io/acme/agent-state/research-agent-a:main
+osix pull ghcr.io/acme/agent-state/research-agent-a:snap-000004 --tag restored-main
+```
+
+Pull resolves the remote manifest, records the resolved digest locally, fetches
+the config and layer blobs, and recursively fetches parent snapshots. When the
+remote reference is a tag, the local tag defaults to the same name unless
+`--tag` overrides it. Digest pulls preserve immutable identity without creating
+a mutable local tag unless requested.
+
 ### Watch
 
 ```text
@@ -174,9 +200,9 @@ type Snapshotter interface {
 Commands MUST return non-zero when:
 
 - registry resolution fails
+- push or pull fails to verify a manifest, config, or layer digest
 - decryption fails
 - integrity verification fails
 - secret policy blocks snapshot creation
 - branch update detects a conflict
 - restore would overwrite non-empty local state without explicit force
-

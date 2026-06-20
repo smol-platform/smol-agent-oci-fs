@@ -254,3 +254,19 @@ func TestParseRegistryReference(t *testing.T) {
 		}
 	}
 }
+
+func TestRegistryBaseURL(t *testing.T) {
+	cases := map[string]string{
+		"localhost:5000":      "http://localhost:5000",
+		"127.0.0.1:5000":      "http://127.0.0.1:5000",
+		"[::1]:5000":          "http://[::1]:5000",
+		"registry.localhost":  "http://registry.localhost",
+		"ghcr.io":             "https://ghcr.io",
+		"registry.example.io": "https://registry.example.io",
+	}
+	for input, want := range cases {
+		if got := registryBaseURL(input); got != want {
+			t.Fatalf("%s: want %s got %s", input, want, got)
+		}
+	}
+}

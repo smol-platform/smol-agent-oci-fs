@@ -38,6 +38,8 @@ Start a local OCI registry such as Docker Distribution on `localhost:5000`, then
 
 ```sh
 ./osix snapshot agentfs --tag snap-000003 --also-tag main --push
+./osix push main
+./osix pull localhost:5000/acme/research-agent:main --tag pulled-main
 ./osix restore localhost:5000/acme/research-agent:snap-000003 ./restored
 ```
 

@@ -16,6 +16,8 @@ const usage = `osix is a local prototype for OCI Agent State Images.
 Usage:
   osix init BASE --name NAME --state REF --mount DIR [--encrypt RECIPIENTS]
   osix snapshot DIR [--message MSG] [--tag TAG] [--also-tag TAG] [--expected-parent DIGEST] [--encrypt RECIPIENTS] [--sign KEY|keyless] [--attest TYPE]
+  osix push REF [REGISTRY/REPO] [--tag TAG]
+  osix pull REGISTRY/REPO:TAG [--tag LOCAL_TAG]
   osix restore REF DIR [--force] [--decrypt IDENTITIES]
   osix mount REF DIR [--mode auto|overlay|fuse|materialized] [--rw] [--branch BRANCH] [--force] [--decrypt IDENTITIES] [--cache DIR] [--lazy]
   osix mount status DIR
@@ -54,6 +56,10 @@ func run(args []string) error {
 		return runInit(args[1:])
 	case "snapshot":
 		return runSnapshot(args[1:])
+	case "push":
+		return runPush(args[1:])
+	case "pull":
+		return runPull(args[1:])
 	case "restore":
 		return runRestore(args[1:], false)
 	case "mount":
@@ -81,6 +87,21 @@ func run(args []string) error {
 	default:
 		return fmt.Errorf("unknown command %q\n\n%s", args[0], usage)
 	}
+}
+
+type repeatedStrings []string
+
+func (v *repeatedStrings) String() string {
+	return strings.Join(*v, ",")
+}
+
+func (v *repeatedStrings) Set(value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fmt.Errorf("empty tag")
+	}
+	*v = append(*v, value)
+	return nil
 }
 
 func runInit(args []string) error {
@@ -116,6 +137,72 @@ func runInit(args []string) error {
 	fmt.Printf("  base:   %s\n", cfg.Base)
 	fmt.Printf("  state:  %s\n", cfg.StateRef)
 	fmt.Printf("  mount:  %s\n", cfg.Mount)
+	return nil
+}
+
+func runPush(args []string) error {
+	fs := flag.NewFlagSet("push", flag.ContinueOnError)
+	var tags repeatedStrings
+	fs.Var(&tags, "tag", "remote tag to publish for the selected snapshot; may be repeated")
+	fs.SetOutput(os.Stderr)
+	if err := parseInterspersed(fs, args, nil); err != nil {
+		return err
+	}
+	if fs.NArg() < 1 || fs.NArg() > 2 {
+		return fmt.Errorf("usage: osix push REF [REGISTRY/REPO] [--tag TAG]")
+	}
+	ref := fs.Arg(0)
+	remoteRepo := ""
+	if fs.NArg() == 2 {
+		remoteRepo = fs.Arg(1)
+	} else {
+		cfg, err := osix.Workspace(".")
+		if err != nil {
+			return err
+		}
+		remoteRepo = cfg.StateRef
+	}
+	if !strings.HasPrefix(ref, "sha256:") && !containsString(tags, ref) {
+		tags = append(tags, ref)
+	}
+	if err := osix.PushSnapshot(".", remoteRepo, ref, tags); err != nil {
+		return err
+	}
+	fmt.Printf("pushed %s to %s\n", ref, remoteRepo)
+	if len(tags) > 0 {
+		fmt.Printf("tags %s\n", strings.Join(tags, ","))
+	}
+	return nil
+}
+
+func runPull(args []string) error {
+	fs := flag.NewFlagSet("pull", flag.ContinueOnError)
+	localTag := fs.String("tag", "", "local tag to write for the pulled snapshot")
+	fs.SetOutput(os.Stderr)
+	if err := parseInterspersed(fs, args, nil); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: osix pull REGISTRY/REPO:TAG [--tag LOCAL_TAG]")
+	}
+	remoteRef := fs.Arg(0)
+	if *localTag == "" {
+		parsed, err := osix.ParseRegistryReference(remoteRef)
+		if err != nil {
+			return err
+		}
+		if !strings.HasPrefix(parsed.Reference, "sha256:") {
+			*localTag = parsed.Reference
+		}
+	}
+	digest, err := osix.PullSnapshot(".", remoteRef, *localTag)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("pulled %s\n", digest)
+	if *localTag != "" {
+		fmt.Printf("tagged %s -> %s\n", *localTag, digest)
+	}
 	return nil
 }
 
@@ -171,6 +258,15 @@ func runSnapshot(args []string) error {
 		fmt.Printf("pushed %s with tags %s\n", cfg.StateRef, strings.Join(result.Tags, ","))
 	}
 	return nil
+}
+
+func containsString(values []string, value string) bool {
+	for _, item := range values {
+		if item == value {
+			return true
+		}
+	}
+	return false
 }
 
 func runRestore(args []string, mountAlias bool) error {

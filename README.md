@@ -57,6 +57,8 @@ For registry-backed use, initialize with a registry repository:
   --mount ./agentfs
 
 ./osix snapshot agentfs --tag snap-000001 --also-tag main --push
+./osix push main
+./osix pull localhost:5000/acme/research-agent-a:main --tag pulled-main
 ./osix restore localhost:5000/acme/research-agent-a:snap-000001 restored
 ```
 
@@ -90,6 +92,8 @@ Implemented commands:
 
 - `osix init`
 - `osix snapshot`
+- `osix push`
+- `osix pull`
 - `osix restore`
 - `osix mount`
 - `osix mount status`

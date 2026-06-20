@@ -60,7 +60,7 @@ func PushSnapshot(workspaceRoot, remoteRepo, ref string, extraTags []string) err
 	if err != nil {
 		return err
 	}
-	client := registryClient{base: "http://" + remote.Registry, repo: remote.Repo, http: http.DefaultClient}
+	client := registryClient{base: registryBaseURL(remote.Registry), repo: remote.Repo, http: http.DefaultClient}
 	chain, err := s.snapshotChainWithDigests(digest)
 	if err != nil {
 		return err
@@ -111,7 +111,7 @@ func PullSnapshot(workspaceRoot, remoteRef, localTag string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	client := registryClient{base: "http://" + ref.Registry, repo: ref.Repo, http: http.DefaultClient}
+	client := registryClient{base: registryBaseURL(ref.Registry), repo: ref.Repo, http: http.DefaultClient}
 	digest, err := pullManifestRecursive(s, client, ref.Reference)
 	if err != nil {
 		return "", err
@@ -184,6 +184,30 @@ func parseRegistryRepo(remoteRepo string) (registryRepo, error) {
 		return registryRepo{}, fmt.Errorf("registry repo must be REGISTRY/REPO, got %q", remoteRepo)
 	}
 	return registryRepo{Registry: parts[0], Repo: parts[1]}, nil
+}
+
+func registryBaseURL(registry string) string {
+	if isLocalRegistry(registry) {
+		return "http://" + registry
+	}
+	return "https://" + registry
+}
+
+func isLocalRegistry(registry string) bool {
+	host := registry
+	if strings.HasPrefix(host, "[") {
+		if end := strings.Index(host, "]"); end >= 0 {
+			host = strings.Trim(host[:end+1], "[]")
+		}
+	} else if before, _, ok := strings.Cut(host, ":"); ok {
+		host = before
+	}
+	switch strings.ToLower(host) {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	default:
+		return strings.HasSuffix(strings.ToLower(host), ".localhost")
+	}
 }
 
 type registryClient struct {
