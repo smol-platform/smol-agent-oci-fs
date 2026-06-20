@@ -17,6 +17,9 @@ struct VolumeMetadataSmoke {
         let staleDeletePath = "agent/workspace/delete-me.txt"
         let staleRenamePath = "agent/workspace/rename-me.txt"
         let staleRenameDestinationPath = "agent/workspace/renamed.txt"
+        let nameBoundaryRemovePath = "agent/workspace/name-boundary-remove.txt"
+        let nameBoundaryRenamePath = "agent/workspace/name-boundary-rename.txt"
+        let nameBoundaryRenameDestinationPath = "agent/workspace/name-boundary-renamed.txt"
         let failedAttributesPath = "agent/workspace/failed-attrs.txt"
         let cowDeletePath = "agent/workspace/cow-delete.txt"
         let cowRenamePath = "agent/workspace/cow-rename.txt"
@@ -48,6 +51,8 @@ struct VolumeMetadataSmoke {
         let lowerFile = URL(fileURLWithPath: lower).appendingPathComponent(relativePath).path
         let lowerDeleteFile = URL(fileURLWithPath: lower).appendingPathComponent(staleDeletePath).path
         let lowerRenameFile = URL(fileURLWithPath: lower).appendingPathComponent(staleRenamePath).path
+        let lowerNameBoundaryRemoveFile = URL(fileURLWithPath: lower).appendingPathComponent(nameBoundaryRemovePath).path
+        let lowerNameBoundaryRenameFile = URL(fileURLWithPath: lower).appendingPathComponent(nameBoundaryRenamePath).path
         let lowerFailedAttributesFile = URL(fileURLWithPath: lower).appendingPathComponent(failedAttributesPath).path
         let lowerCOWDeleteFile = URL(fileURLWithPath: lower).appendingPathComponent(cowDeletePath).path
         let lowerCOWRenameFile = URL(fileURLWithPath: lower).appendingPathComponent(cowRenamePath).path
@@ -87,6 +92,9 @@ struct VolumeMetadataSmoke {
         let upperDeleteWhiteout = URL(fileURLWithPath: upper).appendingPathComponent("agent/workspace/.wh.delete-me.txt").path
         let upperRenameDestination = URL(fileURLWithPath: upper).appendingPathComponent(staleRenameDestinationPath).path
         let upperRenameWhiteout = URL(fileURLWithPath: upper).appendingPathComponent("agent/workspace/.wh.rename-me.txt").path
+        let upperNameBoundaryRemoveWhiteout = URL(fileURLWithPath: upper).appendingPathComponent("agent/workspace/.wh.name-boundary-remove.txt").path
+        let upperNameBoundaryRenameDestination = URL(fileURLWithPath: upper).appendingPathComponent(nameBoundaryRenameDestinationPath).path
+        let upperNameBoundaryRenameWhiteout = URL(fileURLWithPath: upper).appendingPathComponent("agent/workspace/.wh.name-boundary-rename.txt").path
         let upperFailedAttributesFile = URL(fileURLWithPath: upper).appendingPathComponent(failedAttributesPath).path
         let upperCOWDeleteFile = URL(fileURLWithPath: upper).appendingPathComponent(cowDeletePath).path
         let upperCOWDeleteWhiteout = URL(fileURLWithPath: upper).appendingPathComponent("agent/workspace/.wh.cow-delete.txt").path
@@ -124,6 +132,8 @@ struct VolumeMetadataSmoke {
         let dirtyFile = URL(fileURLWithPath: work).deletingLastPathComponent().appendingPathComponent("dirty.json").path
         try Data("delete".utf8).write(to: URL(fileURLWithPath: lowerDeleteFile))
         try Data("rename".utf8).write(to: URL(fileURLWithPath: lowerRenameFile))
+        try Data("name boundary remove".utf8).write(to: URL(fileURLWithPath: lowerNameBoundaryRemoveFile))
+        try Data("name boundary rename".utf8).write(to: URL(fileURLWithPath: lowerNameBoundaryRenameFile))
         try Data("failed attrs".utf8).write(to: URL(fileURLWithPath: lowerFailedAttributesFile))
         try Data("cow-delete".utf8).write(to: URL(fileURLWithPath: lowerCOWDeleteFile))
         try Data("cow-rename".utf8).write(to: URL(fileURLWithPath: lowerCOWRenameFile))
@@ -417,13 +427,35 @@ struct VolumeMetadataSmoke {
             throw SmokeError("non-empty upper directory removal deleted child")
         }
 
-        let staleUpperDelete = OSIxItem(relativePath: staleDeletePath, physicalPath: URL(fileURLWithPath: upper).appendingPathComponent(staleDeletePath).path, type: .file, source: .upper)
-        try removeItem(volume: volume, item: staleUpperDelete, name: FSFileName(string: "delete-me.txt"), directory: OSIxItem(
+        let workspace = OSIxItem(
             relativePath: "agent/workspace",
             physicalPath: URL(fileURLWithPath: lower).appendingPathComponent("agent/workspace").path,
             type: .directory,
             source: .lower
-        ))
+        )
+        let mismatchedRemoveHandle = OSIxItem(relativePath: staleDeletePath, physicalPath: lowerDeleteFile, type: .file, source: .lower)
+        try removeItem(volume: volume, item: mismatchedRemoveHandle, name: FSFileName(string: "name-boundary-remove.txt"), directory: workspace)
+        guard FileManager.default.fileExists(atPath: upperNameBoundaryRemoveWhiteout),
+              !FileManager.default.fileExists(atPath: upperDeleteWhiteout),
+              (try? String(contentsOfFile: lowerDeleteFile, encoding: .utf8)) == "delete" else {
+            throw SmokeError("removeItem did not use parent/name as the authoritative removal path")
+        }
+        do {
+            _ = try lookupItem(volume: volume, name: FSFileName(string: "name-boundary-remove.txt"), directory: workspace)
+            throw SmokeError("name-boundary remove left removed path visible")
+        } catch let error as NSError where error.domain == NSPOSIXErrorDomain && error.code == Int(ENOENT) {
+        }
+        let mismatchedRenameHandle = OSIxItem(relativePath: staleRenamePath, physicalPath: lowerRenameFile, type: .file, source: .lower)
+        try renameItem(volume: volume, item: mismatchedRenameHandle, sourceDirectory: workspace, sourceName: FSFileName(string: "name-boundary-rename.txt"), destinationName: FSFileName(string: "name-boundary-renamed.txt"), destinationDirectory: workspace)
+        guard FileManager.default.fileExists(atPath: upperNameBoundaryRenameWhiteout),
+              (try? String(contentsOfFile: upperNameBoundaryRenameDestination, encoding: .utf8)) == "name boundary rename",
+              !FileManager.default.fileExists(atPath: upperRenameWhiteout),
+              (try? String(contentsOfFile: lowerRenameFile, encoding: .utf8)) == "rename" else {
+            throw SmokeError("renameItem did not use source parent/name as the authoritative source path")
+        }
+
+        let staleUpperDelete = OSIxItem(relativePath: staleDeletePath, physicalPath: URL(fileURLWithPath: upper).appendingPathComponent(staleDeletePath).path, type: .file, source: .upper)
+        try removeItem(volume: volume, item: staleUpperDelete, name: FSFileName(string: "delete-me.txt"), directory: workspace)
         guard FileManager.default.fileExists(atPath: upperDeleteWhiteout) else {
             throw SmokeError("stale upper remove did not whiteout current lower item")
         }
@@ -433,12 +465,6 @@ struct VolumeMetadataSmoke {
         } catch let error as NSError where error.domain == NSPOSIXErrorDomain && error.code == Int(ENOENT) {
         }
 
-        let workspace = OSIxItem(
-            relativePath: "agent/workspace",
-            physicalPath: URL(fileURLWithPath: lower).appendingPathComponent("agent/workspace").path,
-            type: .directory,
-            source: .lower
-        )
         let danglingItem = try lookupItem(volume: volume, name: FSFileName(string: "dangling-link"), directory: workspace)
         guard let danglingOSIxItem = danglingItem as? OSIxItem, danglingOSIxItem.type == .symlink else {
             throw SmokeError("lookupItem did not return dangling symlink")
@@ -616,6 +642,15 @@ struct VolumeMetadataSmoke {
         }
         guard dirty.paths[staleRenameDestinationPath] == "modified" else {
             throw SmokeError("dirty index did not mark stale rename destination modified")
+        }
+        guard dirty.paths[nameBoundaryRemovePath] == "deleted" else {
+            throw SmokeError("dirty index did not mark name-boundary remove path deleted")
+        }
+        guard dirty.paths[nameBoundaryRenamePath] == "deleted" else {
+            throw SmokeError("dirty index did not mark name-boundary rename source deleted")
+        }
+        guard dirty.paths[nameBoundaryRenameDestinationPath] == "modified" else {
+            throw SmokeError("dirty index did not mark name-boundary rename destination modified")
         }
         guard dirty.paths[cowDeletePath] == "deleted" else {
             throw SmokeError("dirty index did not mark COW delete path deleted")

@@ -373,25 +373,31 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
     }
 
     func removeItem(_ item: FSItem, named name: FSFileName, fromDirectory directory: FSItem, replyHandler reply: @escaping ((any Error)?) -> Void) {
-        guard let item = item as? OSIxItem,
+        guard item is OSIxItem,
+              let directory = directory as? OSIxItem,
+              let rawName = validName(name),
               let upper = mountOptions?.upper else {
             reply(posixError(EINVAL))
             return
         }
         do {
-            let current = try currentItem(for: item)
+            let currentDirectory = try currentDirectory(for: directory)
+            let relativePath = joinRelative(currentDirectory.relativePath, rawName)
+            guard let current = resolveItem(relativePath) else {
+                throw posixError(ENOENT)
+            }
             if current.type == .directory {
                 if try hasVisibleChildren(current) {
                     throw posixError(ENOTEMPTY)
                 }
             }
-            let coversLower = lowerItemExists(item.relativePath)
-            let upperItem = upperPath(upper, item.relativePath)
+            let coversLower = lowerItemExists(relativePath)
+            let upperItem = upperPath(upper, relativePath)
             if itemExists(at: upperItem) {
                 try fileManager.removeItem(atPath: upperItem)
             }
             if current.source == .lower || coversLower {
-                try createWhiteout(for: item.relativePath)
+                try createWhiteout(for: relativePath)
             }
             try flushDirtyIndex()
             reply(nil)
@@ -401,49 +407,55 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
     }
 
     func renameItem(_ item: FSItem, inDirectory sourceDirectory: FSItem, named sourceName: FSFileName, to destinationName: FSFileName, inDirectory destinationDirectory: FSItem, overItem: FSItem?, replyHandler reply: @escaping (FSFileName?, (any Error)?) -> Void) {
-        guard let item = item as? OSIxItem,
+        guard item is OSIxItem,
+              let sourceDirectory = sourceDirectory as? OSIxItem,
               let destinationDirectory = destinationDirectory as? OSIxItem,
+              let oldName = validName(sourceName),
               let newName = validName(destinationName),
               let upper = mountOptions?.upper else {
             reply(nil, posixError(EINVAL))
             return
         }
         do {
-            let current = try currentItem(for: item)
+            let currentSourceDirectory = try currentDirectory(for: sourceDirectory)
+            let sourceRelativePath = joinRelative(currentSourceDirectory.relativePath, oldName)
+            guard let current = resolveItem(sourceRelativePath) else {
+                throw posixError(ENOENT)
+            }
             let currentDestinationDirectory = try currentDirectory(for: destinationDirectory)
             let destinationRelativePath = joinRelative(currentDestinationDirectory.relativePath, newName)
-            if item.relativePath == destinationRelativePath {
+            if sourceRelativePath == destinationRelativePath {
                 reply(FSFileName(string: newName), nil)
                 return
             }
-            if current.type == .directory, isDescendantPath(destinationRelativePath, of: current.relativePath) {
+            if current.type == .directory, isDescendantPath(destinationRelativePath, of: sourceRelativePath) {
                 throw posixError(EINVAL)
             }
             if let destination = resolveItem(destinationRelativePath) {
                 try validateRenameDestination(source: current, destination: destination)
             }
-            let sourceCoversLower = lowerItemExists(item.relativePath)
+            let sourceCoversLower = lowerItemExists(sourceRelativePath)
             let destinationPath = upperPath(upper, destinationRelativePath)
             try fileManager.createDirectory(atPath: parentFilesystemPath(destinationPath), withIntermediateDirectories: true)
             if current.type == .directory, sourceCoversLower {
                 try renameLowerCoveringDirectory(current, destinationPath: destinationPath)
-                let sourceUpperPath = upperPath(upper, item.relativePath)
+                let sourceUpperPath = upperPath(upper, sourceRelativePath)
                 if itemExists(at: sourceUpperPath) {
                     try fileManager.removeItem(atPath: sourceUpperPath)
                 }
-                try createWhiteout(for: item.relativePath)
+                try createWhiteout(for: sourceRelativePath)
                 removeWhiteout(for: destinationRelativePath)
                 try flushDirtyIndex()
                 reply(FSFileName(string: newName), nil)
                 return
             }
-            let sourcePath = try ensureUpperItem(for: item)
+            let sourcePath = try ensureUpperItem(for: current)
             if itemExists(at: destinationPath) {
                 try fileManager.removeItem(atPath: destinationPath)
             }
             try fileManager.moveItem(atPath: sourcePath, toPath: destinationPath)
             if current.source == .lower || sourceCoversLower {
-                try createWhiteout(for: item.relativePath)
+                try createWhiteout(for: sourceRelativePath)
             }
             removeWhiteout(for: destinationRelativePath)
             try flushDirtyIndex()
