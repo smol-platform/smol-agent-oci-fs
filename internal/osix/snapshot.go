@@ -729,6 +729,9 @@ func extractLayer(data []byte, target string) error {
 		}
 		path := filepath.Join(target, clean)
 		if strings.HasPrefix(filepath.Base(clean), ".wh.") {
+			if err := validateWhiteoutHeader(hdr); err != nil {
+				return err
+			}
 			if err := applyWhiteout(target, clean); err != nil {
 				return err
 			}
@@ -788,6 +791,16 @@ func extractLayer(data []byte, target string) error {
 		default:
 			return fmt.Errorf("unsupported tar entry %q type %v", hdr.Name, hdr.Typeflag)
 		}
+	}
+	return nil
+}
+
+func validateWhiteoutHeader(hdr *tar.Header) error {
+	if hdr.Typeflag != tar.TypeReg && hdr.Typeflag != tar.TypeRegA {
+		return fmt.Errorf("invalid whiteout %q type %v", hdr.Name, hdr.Typeflag)
+	}
+	if hdr.Size != 0 {
+		return fmt.Errorf("invalid whiteout %q size %d", hdr.Name, hdr.Size)
 	}
 	return nil
 }

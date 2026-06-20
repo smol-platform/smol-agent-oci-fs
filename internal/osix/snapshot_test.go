@@ -371,6 +371,54 @@ func TestExtractLayerRejectsMalformedWhiteout(t *testing.T) {
 	assertFile(t, filepath.Join(restore, "agent", "workspace", "keep.txt"), "keep\n")
 }
 
+func TestExtractLayerRejectsInvalidWhiteoutHeader(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		header  tar.Header
+		payload []byte
+	}{
+		{
+			name: "directory",
+			header: tar.Header{
+				Name:     "agent/workspace/.wh.remove.txt",
+				Typeflag: tar.TypeDir,
+				Mode:     0o755,
+			},
+		},
+		{
+			name: "payload",
+			header: tar.Header{
+				Name:     "agent/workspace/.wh.remove.txt",
+				Typeflag: tar.TypeReg,
+				Mode:     0,
+				Size:     int64(len("payload")),
+			},
+			payload: []byte("payload"),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			restore := t.TempDir()
+			mustWrite(t, filepath.Join(restore, "agent", "workspace", "remove.txt"), "keep\n")
+			layer := rawLayer(t, func(tw *tar.Writer) {
+				if err := tw.WriteHeader(&tc.header); err != nil {
+					t.Fatal(err)
+				}
+				if len(tc.payload) > 0 {
+					if _, err := tw.Write(tc.payload); err != nil {
+						t.Fatal(err)
+					}
+				}
+			})
+
+			err := extractLayer(layer, restore)
+			if err == nil || !strings.Contains(err.Error(), "invalid whiteout") {
+				t.Fatalf("expected invalid whiteout header error, got %v", err)
+			}
+			assertFile(t, filepath.Join(restore, "agent", "workspace", "remove.txt"), "keep\n")
+		})
+	}
+}
+
 func TestExtractLayerRejectsWhiteoutThroughSymlinkParent(t *testing.T) {
 	restore := t.TempDir()
 	outside := t.TempDir()
