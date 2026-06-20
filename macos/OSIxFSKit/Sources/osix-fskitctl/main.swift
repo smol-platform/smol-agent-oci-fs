@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import FSKit
 
@@ -63,6 +64,7 @@ struct OSIxFSKitControl {
         let mode = opts["mode"] ?? "overlay"
         try validateMountMode(mode)
         try validateSourceDigest(sourceDigest)
+        try validateMountPaths(workspaceRoot: workspaceRoot, lower: lower, upper: upper, work: work)
         try await requireReady(bundleID: bundleID, fileSystemType: fsType)
 
         try FileManager.default.createDirectory(atPath: target, withIntermediateDirectories: true)
@@ -96,6 +98,52 @@ struct OSIxFSKitControl {
         guard hex.count == 64, hex.unicodeScalars.allSatisfy({ hexDigits.contains($0) }) else {
             throw usage("--source-digest must be a sha256 digest")
         }
+    }
+
+    static func validateMountPaths(workspaceRoot: String, lower: String, upper: String, work: String) throws {
+        try validateDirectory(path: workspaceRoot, option: "--workspace-root")
+        try validateDirectory(path: lower, option: "--lower", rejectWorldWritable: true)
+        try validateDirectory(path: upper, option: "--upper", rejectWorldWritable: true)
+        try validateDirectory(path: work, option: "--work", rejectWorldWritable: true)
+        try validateRuntimeDirectoriesAreDisjoint(lower: lower, upper: upper, work: work)
+    }
+
+    static func validateDirectory(path: String, option: String, rejectWorldWritable: Bool = false) throws {
+        var statBuffer = stat()
+        guard lstat(path, &statBuffer) == 0 else {
+            throw CLIError(message: "\(option) \(path) is unavailable: \(String(cString: strerror(errno)))", code: 64)
+        }
+        guard statBuffer.st_mode & S_IFMT == S_IFDIR else {
+            throw CLIError(message: "\(option) \(path) is not a directory", code: 64)
+        }
+        if rejectWorldWritable, statBuffer.st_mode & mode_t(S_IWOTH) != 0 {
+            throw CLIError(message: "refusing world-writable runtime directory \(option) \(path)", code: 64)
+        }
+    }
+
+    static func validateRuntimeDirectoriesAreDisjoint(lower: String, upper: String, work: String) throws {
+        let directories = [
+            ("--lower", canonicalPath(lower)),
+            ("--upper", canonicalPath(upper)),
+            ("--work", canonicalPath(work)),
+        ]
+        for index in directories.indices {
+            for otherIndex in directories.indices where otherIndex > index {
+                let current = directories[index]
+                let other = directories[otherIndex]
+                if current.1 == other.1 || isNestedPath(current.1, under: other.1) || isNestedPath(other.1, under: current.1) {
+                    throw CLIError(message: "\(current.0) and \(other.0) must be separate directories", code: 64)
+                }
+            }
+        }
+    }
+
+    static func canonicalPath(_ path: String) -> String {
+        URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
+    }
+
+    static func isNestedPath(_ path: String, under parent: String) -> Bool {
+        path.hasPrefix(parent.hasSuffix("/") ? parent : parent + "/")
     }
 
     static func unmount(_ opts: [String: String]) throws {

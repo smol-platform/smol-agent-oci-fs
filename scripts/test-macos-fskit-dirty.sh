@@ -96,6 +96,9 @@ swift build --package-path "${repo_root}/macos/OSIxFSKit" -c release >/dev/null
 fskitctl="${repo_root}/macos/OSIxFSKit/.build/release/osix-fskitctl"
 valid_digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
+mkdir -p "${tmp}/helper/lower" "${tmp}/helper/upper" "${tmp}/helper/work" "${tmp}/helper/nested-upper/work" "${tmp}/helper/world-upper"
+chmod 0777 "${tmp}/helper/world-upper"
+
 if "${fskitctl}" mount \
   --source-ref snap \
   --source-digest "${valid_digest}" \
@@ -116,6 +119,24 @@ grep -q "missing --target" "${tmp}/missing-target.err"
 if "${fskitctl}" mount \
   --target "${tmp}/target" \
   --source-ref snap \
+  --source-digest "${valid_digest}" \
+  --workspace-root "${tmp}" \
+  --lower "${tmp}/helper/missing-lower" \
+  --upper "${tmp}/helper/upper" \
+  --work "${tmp}/helper/work" \
+  2> "${tmp}/missing-lower.err"; then
+  echo "osix-fskitctl accepted missing --lower" >&2
+  exit 1
+elif [[ "$?" -ne 64 ]]; then
+  echo "osix-fskitctl missing --lower returned unexpected status" >&2
+  cat "${tmp}/missing-lower.err" >&2
+  exit 1
+fi
+grep -q -- "--lower .* is unavailable" "${tmp}/missing-lower.err"
+
+if "${fskitctl}" mount \
+  --target "${tmp}/target" \
+  --source-ref snap \
   --source-digest not-a-digest \
   --workspace-root "${tmp}" \
   --lower "${tmp}/volume/lower" \
@@ -130,6 +151,42 @@ elif [[ "$?" -ne 64 ]]; then
   exit 1
 fi
 grep -q -- "--source-digest must be a sha256 digest" "${tmp}/bad-digest.err"
+
+if "${fskitctl}" mount \
+  --target "${tmp}/target" \
+  --source-ref snap \
+  --source-digest "${valid_digest}" \
+  --workspace-root "${tmp}" \
+  --lower "${tmp}/helper/lower" \
+  --upper "${tmp}/helper/world-upper" \
+  --work "${tmp}/helper/work" \
+  2> "${tmp}/world-upper.err"; then
+  echo "osix-fskitctl accepted world-writable --upper" >&2
+  exit 1
+elif [[ "$?" -ne 64 ]]; then
+  echo "osix-fskitctl world-writable --upper returned unexpected status" >&2
+  cat "${tmp}/world-upper.err" >&2
+  exit 1
+fi
+grep -q "refusing world-writable runtime directory --upper" "${tmp}/world-upper.err"
+
+if "${fskitctl}" mount \
+  --target "${tmp}/target" \
+  --source-ref snap \
+  --source-digest "${valid_digest}" \
+  --workspace-root "${tmp}" \
+  --lower "${tmp}/helper/lower" \
+  --upper "${tmp}/helper/nested-upper" \
+  --work "${tmp}/helper/nested-upper/work" \
+  2> "${tmp}/nested-work.err"; then
+  echo "osix-fskitctl accepted nested --upper/--work" >&2
+  exit 1
+elif [[ "$?" -ne 64 ]]; then
+  echo "osix-fskitctl nested --upper/--work returned unexpected status" >&2
+  cat "${tmp}/nested-work.err" >&2
+  exit 1
+fi
+grep -q -- "--upper and --work must be separate directories" "${tmp}/nested-work.err"
 
 if "${fskitctl}" mount \
   --target "${tmp}/target" \
