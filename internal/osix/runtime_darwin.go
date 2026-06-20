@@ -13,7 +13,10 @@ import (
 	"time"
 )
 
-const defaultDarwinFSKitBundleID = "io.github.smol-platform.smol-agent-oci-fs.fskit.extension"
+const (
+	defaultDarwinFSKitBundleID = "io.github.smol-platform.smol-agent-oci-fs.fskit.extension"
+	defaultDarwinFSKitType     = "OSIxFS"
+)
 
 func overlayAvailable() error {
 	return darwinFSKitAvailable()
@@ -96,9 +99,16 @@ func darwinFSKitBundleID() string {
 	return defaultDarwinFSKitBundleID
 }
 
+func darwinFSKitType() string {
+	if fsType := strings.TrimSpace(os.Getenv("OSIX_FSKIT_TYPE")); fsType != "" {
+		return fsType
+	}
+	return defaultDarwinFSKitType
+}
+
 func darwinFSKitDoctor(helper string) error {
 	var stderr bytes.Buffer
-	cmd := exec.Command(helper, "doctor", "--bundle-id", darwinFSKitBundleID())
+	cmd := exec.Command(helper, "doctor", "--bundle-id", darwinFSKitBundleID(), "--fstype", darwinFSKitType())
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		msg := strings.TrimSpace(stderr.String())
@@ -139,6 +149,7 @@ func darwinFSKitMount(ctx context.Context, workspaceRoot, sourceRef, target stri
 	args := []string{
 		"mount",
 		"--bundle-id", darwinFSKitBundleID(),
+		"--fstype", darwinFSKitType(),
 		"--workspace-root", absPath(workspaceRoot),
 		"--source-ref", sourceRef,
 		"--source-digest", digest,
