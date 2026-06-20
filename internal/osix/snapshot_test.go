@@ -205,6 +205,62 @@ func TestMountDiffAndSnapshotUsesMountedParent(t *testing.T) {
 	}
 }
 
+func TestSnapshotRestoreTypeChanges(t *testing.T) {
+	root := t.TempDir()
+	if _, err := Init(root, InitOptions{
+		Base:          "example/base:latest",
+		Name:          "agent",
+		StateRef:      "local/agent",
+		Mount:         filepath.Join(root, "fs"),
+		DefaultBranch: "main",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fs := filepath.Join(root, "fs")
+	mustWrite(t, filepath.Join(fs, "agent", "workspace", "replace-dir", "child.txt"), "old child\n")
+	mustWrite(t, filepath.Join(fs, "agent", "workspace", "replace-file"), "old file\n")
+	if err := os.Symlink("old-target", filepath.Join(fs, "agent", "workspace", "replace-link")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Snapshot(root, fs, SnapshotOptions{Tag: "snap-000001", AlsoTag: "main"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.RemoveAll(filepath.Join(fs, "agent", "workspace", "replace-dir")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(fs, "agent", "workspace", "replace-file")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(fs, "agent", "workspace", "replace-link")); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(fs, "agent", "workspace", "replace-dir"), "new file\n")
+	mustWrite(t, filepath.Join(fs, "agent", "workspace", "replace-file", "child.txt"), "new child\n")
+	mustWrite(t, filepath.Join(fs, "agent", "workspace", "replace-link"), "new link file\n")
+	second, err := Snapshot(root, fs, SnapshotOptions{Tag: "snap-000002", AlsoTag: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertLayerEntries(t, root, second.ManifestDigest, []string{
+		"agent/workspace/.wh.replace-dir",
+		"agent/workspace/.wh.replace-file",
+		"agent/workspace/.wh.replace-link",
+		"agent/workspace/replace-dir",
+		"agent/workspace/replace-file",
+		"agent/workspace/replace-file/child.txt",
+		"agent/workspace/replace-link",
+	})
+
+	restore := filepath.Join(root, "restore-type-change")
+	if err := Restore(root, "main", restore, RestoreOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	assertFile(t, filepath.Join(restore, "agent", "workspace", "replace-dir"), "new file\n")
+	assertFile(t, filepath.Join(restore, "agent", "workspace", "replace-file", "child.txt"), "new child\n")
+	assertFile(t, filepath.Join(restore, "agent", "workspace", "replace-link"), "new link file\n")
+}
+
 func TestAgeEncryptedSnapshotRestore(t *testing.T) {
 	root := t.TempDir()
 	identity, err := age.GenerateX25519Identity()

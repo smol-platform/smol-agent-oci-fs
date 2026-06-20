@@ -76,7 +76,10 @@ func Snapshot(workspaceRoot, target string, opts SnapshotOptions) (SnapshotResul
 		}
 		layerRoot = mountInfo.UpperDir
 		layerEntries = changedOverlayEntries(parentTree, upperEntries)
-		whiteouts = effectiveOverlayWhiteouts(parentTree, upperWhiteouts)
+		whiteouts = mergeWhiteouts(
+			effectiveOverlayWhiteouts(parentTree, upperWhiteouts),
+			typeChangeWhiteouts(parentTree, layerEntries),
+		)
 		dirtyBytes = dirtyBytesForEntries(layerEntries)
 	}
 	layerData, err := makeLayer(layerRoot, layerEntries, whiteouts)
@@ -821,8 +824,48 @@ func diffLayerEntries(parent, current []TreeEntry) ([]TreeEntry, []string) {
 			whiteouts = append(whiteouts, entry.Path)
 		}
 	}
-	sort.Strings(whiteouts)
+	whiteouts = mergeWhiteouts(whiteouts, typeChangeWhiteouts(parent, entries))
 	return entries, whiteouts
+}
+
+func typeChangeWhiteouts(parent, changed []TreeEntry) []string {
+	parentMap := treeMap(parent)
+	var whiteouts []string
+	for _, entry := range changed {
+		if parentEntry, ok := parentMap[entry.Path]; ok && parentEntry.Type != entry.Type {
+			whiteouts = append(whiteouts, entry.Path)
+		}
+	}
+	return whiteouts
+}
+
+func mergeWhiteouts(groups ...[]string) []string {
+	seen := map[string]bool{}
+	var merged []string
+	for _, group := range groups {
+		for _, path := range group {
+			if path == "" || seen[path] {
+				continue
+			}
+			seen[path] = true
+			merged = append(merged, path)
+		}
+	}
+	sort.Strings(merged)
+	pruned := merged[:0]
+	for _, path := range merged {
+		covered := false
+		for _, parent := range pruned {
+			if strings.HasPrefix(path, parent+"/") {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			pruned = append(pruned, path)
+		}
+	}
+	return pruned
 }
 
 func scanOverlayUpper(root string) ([]TreeEntry, []string, int64, error) {
