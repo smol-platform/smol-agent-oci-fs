@@ -53,11 +53,13 @@ the current user, and runs `osix-fskitctl doctor`.
 For noninteractive test setup, use:
 
 ```sh
-./scripts/install-macos-fskit-app.sh --no-open --background-register
+./scripts/install-macos-fskit-app.sh --no-open --background-register --wait-ready=10
 ```
 
 That launches the host app hidden briefly so ExtensionKit/PlugInKit discovers
-the embedded File System extension without bringing the app to the foreground.
+the embedded File System extension without bringing the app to the foreground,
+then waits up to the requested number of seconds for `FSClient` to report the
+extension ready.
 
 PlugInKit registration is not the same as FSKit runtime enablement. If doctor
 reports that FSClient does not see an enabled module, enable the extension in
@@ -110,6 +112,9 @@ for FSKit. On an enabled macOS 15.4+ host, run:
 ```sh
 ./scripts/test-macos-fskit.sh
 ```
+
+Set `OSIX_FSKIT_READY_TIMEOUT` to change how long the harness waits for
+`FSClient` readiness after installing/registering the local app.
 
 That test mounts both macOS `overlay` and `fuse` modes through FSKit, mutates the
 mounted tree, verifies dirty tracking, snapshots, restores, and unmounts.

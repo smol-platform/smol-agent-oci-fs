@@ -112,7 +112,9 @@ Extensions > File System Extensions.
 
 The integration harness uses `--no-open --background-register` to launch the
 host app hidden long enough for ExtensionKit/PlugInKit discovery without
-foregrounding the app.
+foregrounding the app. It also passes `--wait-ready`, controlled by
+`OSIX_FSKIT_READY_TIMEOUT`, so an enabled extension has a short grace period to
+appear in `FSClient` before the harness reports the System Settings prerequisite.
 
 By default OSIx looks for extension bundle id `io.github.smol-platform.smol-agent-oci-fs.fskit.extension` and filesystem type `OSIxFS`. Override local development values with:
 

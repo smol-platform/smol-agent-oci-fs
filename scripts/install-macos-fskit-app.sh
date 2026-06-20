@@ -12,10 +12,11 @@ register_after_install=1
 elect_after_install=1
 build_helper=1
 background_registration_launch=0
+wait_ready_seconds=0
 
 usage() {
   cat >&2 <<EOF
-usage: $0 [--no-open] [--background-register] [--no-register] [--no-elect] [--no-helper]
+usage: $0 [--no-open] [--background-register] [--wait-ready=SECONDS] [--no-register] [--no-elect] [--no-helper]
 
 Builds and installs the OSIx FSKit host app into:
   ${target_app}
@@ -36,6 +37,14 @@ for arg in "$@"; do
     --background-register)
       background_registration_launch=1
       ;;
+    --wait-ready)
+      echo "--wait-ready requires a numeric seconds value" >&2
+      usage
+      exit 64
+      ;;
+    --wait-ready=*)
+      wait_ready_seconds="${arg#--wait-ready=}"
+      ;;
     --no-register)
       register_after_install=0
       elect_after_install=0
@@ -53,6 +62,11 @@ for arg in "$@"; do
       ;;
   esac
 done
+
+if [[ "${wait_ready_seconds}" != "0" && ! "${wait_ready_seconds}" =~ ^[0-9]+$ ]]; then
+  echo "--wait-ready expects a non-negative integer, got ${wait_ready_seconds}" >&2
+  exit 64
+fi
 
 if [[ "${build_helper}" -eq 1 ]]; then
   "${repo_root}/scripts/build-macos-fskit.sh"
@@ -90,7 +104,23 @@ fi
 
 helper="${repo_root}/.osix-tools/bin/osix-fskitctl"
 if [[ -x "${helper}" ]]; then
-  if ! "${helper}" doctor --bundle-id "${bundle_id}"; then
+  ready=0
+  if [[ "${wait_ready_seconds}" -gt 0 ]]; then
+    deadline=$((SECONDS + wait_ready_seconds))
+    while true; do
+      if "${helper}" doctor --bundle-id "${bundle_id}" >/dev/null 2>&1; then
+        ready=1
+        break
+      fi
+      if [[ "${SECONDS}" -ge "${deadline}" ]]; then
+        break
+      fi
+      sleep 1
+    done
+  fi
+  if [[ "${ready}" -eq 1 ]]; then
+    "${helper}" doctor --bundle-id "${bundle_id}"
+  elif ! "${helper}" doctor --bundle-id "${bundle_id}"; then
     echo "enable the OSIx FSKit extension in System Settings > General > Login Items & Extensions > File System Extensions"
   fi
 fi
