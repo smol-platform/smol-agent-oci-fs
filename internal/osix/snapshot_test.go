@@ -350,6 +350,63 @@ func TestExtractLayerRejectsSymlinkTraversal(t *testing.T) {
 	assertMissing(t, filepath.Join(outside, "owned.txt"))
 }
 
+func TestExtractLayerRejectsNonCanonicalPaths(t *testing.T) {
+	for _, name := range []string{
+		"agent/../workspace/file.txt",
+		"/agent/workspace/file.txt",
+		"agent//workspace/file.txt",
+		"agent/./workspace/file.txt",
+	} {
+		t.Run(name, func(t *testing.T) {
+			restore := t.TempDir()
+			payload := []byte("bad\n")
+			layer := rawLayer(t, func(tw *tar.Writer) {
+				if err := tw.WriteHeader(&tar.Header{
+					Name:     name,
+					Typeflag: tar.TypeReg,
+					Mode:     0o644,
+					Size:     int64(len(payload)),
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := tw.Write(payload); err != nil {
+					t.Fatal(err)
+				}
+			})
+
+			err := extractLayer(layer, restore)
+			if err == nil || !strings.Contains(err.Error(), "unsafe tar path") {
+				t.Fatalf("expected unsafe tar path error, got %v", err)
+			}
+			assertMissing(t, filepath.Join(restore, "agent", "workspace", "file.txt"))
+			assertMissing(t, filepath.Join(restore, "workspace", "file.txt"))
+		})
+	}
+}
+
+func TestExtractLayerAcceptsCanonicalNestedPath(t *testing.T) {
+	restore := t.TempDir()
+	payload := []byte("ok\n")
+	layer := rawLayer(t, func(tw *tar.Writer) {
+		if err := tw.WriteHeader(&tar.Header{
+			Name:     "agent/workspace/file.txt",
+			Typeflag: tar.TypeReg,
+			Mode:     0o644,
+			Size:     int64(len(payload)),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write(payload); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	if err := extractLayer(layer, restore); err != nil {
+		t.Fatal(err)
+	}
+	assertFile(t, filepath.Join(restore, "agent", "workspace", "file.txt"), "ok\n")
+}
+
 func TestExtractLayerRejectsMalformedWhiteout(t *testing.T) {
 	restore := t.TempDir()
 	mustWrite(t, filepath.Join(restore, "agent", "workspace", "keep.txt"), "keep\n")

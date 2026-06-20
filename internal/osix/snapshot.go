@@ -723,9 +723,9 @@ func extractLayer(data []byte, target string) error {
 		if err != nil {
 			return err
 		}
-		clean := filepath.Clean(hdr.Name)
-		if clean == "." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) || filepath.IsAbs(clean) {
-			return fmt.Errorf("unsafe tar path %q", hdr.Name)
+		clean, err := canonicalLayerPath(hdr.Name)
+		if err != nil {
+			return err
 		}
 		path := filepath.Join(target, clean)
 		if strings.HasPrefix(filepath.Base(clean), ".wh.") {
@@ -793,6 +793,16 @@ func extractLayer(data []byte, target string) error {
 		}
 	}
 	return nil
+}
+
+func canonicalLayerPath(name string) (string, error) {
+	name = filepath.ToSlash(name)
+	clean := filepath.ToSlash(filepath.Clean(name))
+	if clean == "." || strings.HasPrefix(clean, "../") || clean == ".." || strings.HasPrefix(clean, "/") ||
+		clean != name {
+		return "", fmt.Errorf("unsafe tar path %q", name)
+	}
+	return clean, nil
 }
 
 func validateWhiteoutHeader(hdr *tar.Header) error {
