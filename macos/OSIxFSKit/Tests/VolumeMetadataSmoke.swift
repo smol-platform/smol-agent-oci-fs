@@ -56,6 +56,7 @@ struct VolumeMetadataSmoke {
         let renameIntoSelfDirectoryPath = "agent/workspace/rename-into-self"
         let ignoredDirectoryPath = "agent/cache"
         let unsupportedCreateDirectoryPath = "agent/unsupported-create-dir"
+        let unsupportedHardLinkPath = "agent/unsupported-create-dir/hard-link"
         let emptySymlinkDirectoryPath = "agent/empty-symlink-dir"
         let staleTypeDirectoryPath = "agent/stale-type-dir"
         let removedDirectoryPath = "agent/removed"
@@ -119,6 +120,7 @@ struct VolumeMetadataSmoke {
         let upperIgnoredDirectory = URL(fileURLWithPath: upper).appendingPathComponent(ignoredDirectoryPath).path
         let upperIgnoredChild = URL(fileURLWithPath: upper).appendingPathComponent(ignoredDirectoryPath + "/child.txt").path
         let upperUnsupportedCreateDirectory = URL(fileURLWithPath: upper).appendingPathComponent(unsupportedCreateDirectoryPath).path
+        let upperUnsupportedHardLink = URL(fileURLWithPath: upper).appendingPathComponent(unsupportedHardLinkPath).path
         let upperEmptySymlinkDirectory = URL(fileURLWithPath: upper).appendingPathComponent(emptySymlinkDirectoryPath).path
         let upperStaleTypeDirectory = URL(fileURLWithPath: upper).appendingPathComponent(staleTypeDirectoryPath).path
         let upperStaleCreate = URL(fileURLWithPath: upper).appendingPathComponent(removedDirectoryPath + "/should-not-exist.txt").path
@@ -442,6 +444,15 @@ struct VolumeMetadataSmoke {
         }
         guard !FileManager.default.fileExists(atPath: upperUnsupportedCreateDirectory) else {
             throw SmokeError("unsupported createItem left upperdir parent state")
+        }
+        do {
+            try createLink(volume: volume, item: item, name: FSFileName(string: "hard-link"), directory: workspaceItem(lower: lower, relativePath: unsupportedCreateDirectoryPath))
+            throw SmokeError("createLink accepted unsupported hard link")
+        } catch let error as NSError where error.domain == NSPOSIXErrorDomain && error.code == Int(ENOTSUP) {
+        }
+        guard !FileManager.default.fileExists(atPath: upperUnsupportedHardLink),
+              !FileManager.default.fileExists(atPath: upperUnsupportedCreateDirectory) else {
+            throw SmokeError("unsupported createLink left upperdir state")
         }
         do {
             try createSymbolicLink(volume: volume, name: FSFileName(string: "empty-link"), directory: workspaceItem(lower: lower, relativePath: emptySymlinkDirectoryPath), contents: FSFileName(string: ""), attributes: FSItem.SetAttributesRequest())
@@ -1198,6 +1209,16 @@ struct VolumeMetadataSmoke {
         }
         guard replyItem != nil else {
             throw SmokeError("createSymbolicLink returned no item")
+        }
+    }
+
+    static func createLink(volume: OSIxVolume, item: FSItem, name: FSFileName, directory: FSItem) throws {
+        var replyError: (any Error)?
+        volume.createLink(to: item, named: name, inDirectory: directory) { _, error in
+            replyError = error
+        }
+        if let replyError {
+            throw replyError
         }
     }
 

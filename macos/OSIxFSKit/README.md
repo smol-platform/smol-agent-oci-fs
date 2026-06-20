@@ -101,7 +101,8 @@ The extension builds and carries the `com.apple.developer.fskit.fsmodule`
 entitlement. It implements the merged-tree FSKit operation surface used by the
 runtime: lookup, enumeration, reads, writes, create/remove/rename, symlinks,
 copy-on-write, whiteouts, dirty tracking, chmod/chown/timestamps where the host
-filesystem permits them, and xattrs.
+filesystem permits them, and xattrs. Hard links are intentionally unsupported
+and return `ENOTSUP` without mutating upperdir state.
 
 The remaining work is capable-host validation after the app extension is enabled
 for FSKit. On an enabled macOS 15.4+ host, run:
