@@ -5,7 +5,7 @@ import FSKit
 private let opaqueWhiteoutName = ".wh..wh..opq"
 
 @objc
-final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperations, FSVolume.XattrOperations, FSVolume.OpenCloseOperations, FSVolume.PreallocateOperations, FSVolume.AccessCheckOperations {
+final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperations, FSVolume.XattrOperations, FSVolume.OpenCloseOperations, FSVolume.PreallocateOperations, FSVolume.AccessCheckOperations, FSVolume.RenameOperations {
     private let fileManager = FileManager.default
     private var mountOptions: OSIxMountOptions?
     private var root = OSIxItem.root
@@ -339,6 +339,10 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
 
     func preallocateSpace(for item: FSItem, at offset: off_t, length: Int, flags: FSVolume.PreallocateFlags, replyHandler reply: @escaping (Int, (any Error)?) -> Void) {
         reply(0, posixError(ENOTSUP))
+    }
+
+    func setVolumeName(_ name: FSFileName, replyHandler reply: @escaping (FSFileName?, (any Error)?) -> Void) {
+        reply(nil, posixError(ENOTSUP))
     }
 
     func checkAccess(to item: FSItem, requestedAccess access: FSVolume.AccessMask, replyHandler reply: @escaping (Bool, (any Error)?) -> Void) {

@@ -552,6 +552,11 @@ struct VolumeMetadataSmoke {
             throw SmokeError("unsupported preallocateSpace copied lower file into upper")
         }
         do {
+            try setVolumeName(volume: volume, name: FSFileName(string: "RenamedOSIxSmoke"))
+            throw SmokeError("setVolumeName accepted unsupported volume rename")
+        } catch let error as NSError where error.domain == NSPOSIXErrorDomain && error.code == Int(ENOTSUP) {
+        }
+        do {
             try createSymbolicLink(volume: volume, name: FSFileName(string: "empty-link"), directory: workspaceItem(lower: lower, relativePath: emptySymlinkDirectoryPath), contents: FSFileName(string: ""), attributes: FSItem.SetAttributesRequest())
             throw SmokeError("createSymbolicLink accepted empty target")
         } catch let error as NSError where error.domain == NSPOSIXErrorDomain && error.code == Int(EINVAL) {
@@ -1418,6 +1423,16 @@ struct VolumeMetadataSmoke {
 
     static func accessMask(_ rawValue: UInt) -> FSVolume.AccessMask {
         FSVolume.AccessMask(rawValue: rawValue)
+    }
+
+    static func setVolumeName(volume: OSIxVolume, name: FSFileName) throws {
+        var replyError: (any Error)?
+        volume.setVolumeName(name) { _, error in
+            replyError = error
+        }
+        if let replyError {
+            throw replyError
+        }
     }
 
     static func preallocateSpace(volume: OSIxVolume, item: FSItem, length: Int) throws {
