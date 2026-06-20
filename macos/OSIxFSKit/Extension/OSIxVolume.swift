@@ -548,17 +548,22 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
                     throw error
                 }
             }
+            let hadSourceUpperItem = hasUpperItem(for: sourceRelativePath)
+            let existingSourceParent = nearestExistingUpperParent(for: sourceRelativePath)
             let sourcePath = try ensureUpperItem(for: current)
             try fileManager.createDirectory(atPath: parentFilesystemPath(destinationPath), withIntermediateDirectories: true)
             let stashedDestination = try stashHiddenUpperItemIfWhitedOut(destinationRelativePath)
             let destinationWhiteoutExisted = hasWhiteout(for: destinationRelativePath)
+            let destinationBackup = stashedDestination == nil ? try backupUpperItem(destinationRelativePath) : nil
             if stashedDestination == nil, itemExists(at: destinationPath) {
                 try fileManager.removeItem(atPath: destinationPath)
             }
+            var movedSource = false
             var createdSourceWhiteout = false
             var removedDestinationWhiteout = false
             do {
                 try fileManager.moveItem(atPath: sourcePath, toPath: destinationPath)
+                movedSource = true
                 if current.source == .lower || sourceCoversLower {
                     try createWhiteout(for: sourceRelativePath)
                     createdSourceWhiteout = true
@@ -566,6 +571,7 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
                 removeWhiteout(for: destinationRelativePath)
                 removedDestinationWhiteout = destinationWhiteoutExisted
                 try flushDirtyIndex()
+                try discardStashedHiddenUpperItem(destinationBackup)
                 try discardStashedHiddenUpperItem(stashedDestination)
                 reply(FSFileName(string: newName), nil)
             } catch {
@@ -575,6 +581,16 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
                 if removedDestinationWhiteout {
                     try createWhiteout(for: destinationRelativePath)
                 }
+                if movedSource, itemExists(at: destinationPath) {
+                    if itemExists(at: sourcePath) {
+                        try? fileManager.removeItem(atPath: sourcePath)
+                    }
+                    try fileManager.moveItem(atPath: destinationPath, toPath: sourcePath)
+                }
+                if !hadSourceUpperItem {
+                    removeCreatedUpperItemAndEmptyParents(sourceRelativePath, stoppingAt: existingSourceParent)
+                }
+                try restoreStashedHiddenUpperItem(destinationBackup)
                 try restoreStashedHiddenUpperItem(stashedDestination)
                 throw error
             }

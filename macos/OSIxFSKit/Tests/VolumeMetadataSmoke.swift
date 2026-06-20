@@ -27,6 +27,8 @@ struct VolumeMetadataSmoke {
         let removeFlushRollbackPath = "agent/workspace/remove-flush-rollback.txt"
         let cowRenamePath = "agent/workspace/cow-rename.txt"
         let cowRenameDestinationPath = "agent/workspace/cow-renamed.txt"
+        let renameFlushRollbackSourcePath = "agent/workspace/rename-flush-rollback-source.txt"
+        let renameFlushRollbackDestinationPath = "agent/workspace/rename-flush-rollback-dest.txt"
         let renameHiddenRollbackSourcePath = "agent/workspace/rename-hidden-rollback-source.txt"
         let renameHiddenRollbackDestinationPath = "agent/workspace/rename-hidden-rollback-dest.txt"
         let writePath = "agent/workspace/write-me.txt"
@@ -78,6 +80,7 @@ struct VolumeMetadataSmoke {
         let lowerCOWDeleteFile = URL(fileURLWithPath: lower).appendingPathComponent(cowDeletePath).path
         let lowerRemoveFlushRollbackFile = URL(fileURLWithPath: lower).appendingPathComponent(removeFlushRollbackPath).path
         let lowerCOWRenameFile = URL(fileURLWithPath: lower).appendingPathComponent(cowRenamePath).path
+        let lowerRenameFlushRollbackSource = URL(fileURLWithPath: lower).appendingPathComponent(renameFlushRollbackSourcePath).path
         let lowerRenameHiddenRollbackSource = URL(fileURLWithPath: lower).appendingPathComponent(renameHiddenRollbackSourcePath).path
         let lowerWriteFile = URL(fileURLWithPath: lower).appendingPathComponent(writePath).path
         let lowerAbsentXattrFile = URL(fileURLWithPath: lower).appendingPathComponent(absentXattrPath).path
@@ -144,6 +147,9 @@ struct VolumeMetadataSmoke {
         let upperRemoveFlushRollbackWhiteout = URL(fileURLWithPath: upper).appendingPathComponent("agent/workspace/.wh.remove-flush-rollback.txt").path
         let upperCOWRenameDestination = URL(fileURLWithPath: upper).appendingPathComponent(cowRenameDestinationPath).path
         let upperCOWRenameWhiteout = URL(fileURLWithPath: upper).appendingPathComponent("agent/workspace/.wh.cow-rename.txt").path
+        let upperRenameFlushRollbackSource = URL(fileURLWithPath: upper).appendingPathComponent(renameFlushRollbackSourcePath).path
+        let upperRenameFlushRollbackDestination = URL(fileURLWithPath: upper).appendingPathComponent(renameFlushRollbackDestinationPath).path
+        let upperRenameFlushRollbackWhiteout = URL(fileURLWithPath: upper).appendingPathComponent("agent/workspace/.wh.rename-flush-rollback-source.txt").path
         let upperRenameHiddenRollbackSource = URL(fileURLWithPath: upper).appendingPathComponent(renameHiddenRollbackSourcePath).path
         let upperRenameHiddenRollbackSourceWhiteout = URL(fileURLWithPath: upper).appendingPathComponent("agent/workspace/.wh.rename-hidden-rollback-source.txt").path
         let upperRenameHiddenRollbackDestination = URL(fileURLWithPath: upper).appendingPathComponent(renameHiddenRollbackDestinationPath).path
@@ -220,6 +226,7 @@ struct VolumeMetadataSmoke {
         try Data("cow-delete".utf8).write(to: URL(fileURLWithPath: lowerCOWDeleteFile))
         try Data("remove flush rollback lower".utf8).write(to: URL(fileURLWithPath: lowerRemoveFlushRollbackFile))
         try Data("cow-rename".utf8).write(to: URL(fileURLWithPath: lowerCOWRenameFile))
+        try Data("rename flush rollback source".utf8).write(to: URL(fileURLWithPath: lowerRenameFlushRollbackSource))
         try Data("hidden rollback source".utf8).write(to: URL(fileURLWithPath: lowerRenameHiddenRollbackSource))
         try Data("write".utf8).write(to: URL(fileURLWithPath: lowerWriteFile))
         try Data("absent xattr".utf8).write(to: URL(fileURLWithPath: lowerAbsentXattrFile))
@@ -907,6 +914,27 @@ struct VolumeMetadataSmoke {
         do {
             _ = try getAttributes(volume: volume, item: cowRename)
             throw SmokeError("renaming COW upper copy left lower source visible")
+        } catch let error as NSError where error.domain == NSPOSIXErrorDomain && error.code == Int(ENOENT) {
+        }
+        let renameFlushRollback = OSIxItem(relativePath: renameFlushRollbackSourcePath, physicalPath: lowerRenameFlushRollbackSource, type: .file, source: .lower)
+        try? FileManager.default.removeItem(atPath: dirtyFile)
+        try FileManager.default.createDirectory(atPath: dirtyFile, withIntermediateDirectories: false)
+        do {
+            try renameItem(volume: volume, item: renameFlushRollback, sourceDirectory: workspace, sourceName: FSFileName(string: "rename-flush-rollback-source.txt"), destinationName: FSFileName(string: "rename-flush-rollback-dest.txt"), destinationDirectory: workspace)
+            throw SmokeError("rename succeeded despite dirty flush failure")
+        } catch let error as NSError where error.domain == NSPOSIXErrorDomain || error.domain == NSCocoaErrorDomain {
+        }
+        try FileManager.default.removeItem(atPath: dirtyFile)
+        guard (try? String(contentsOfFile: lowerRenameFlushRollbackSource, encoding: .utf8)) == "rename flush rollback source",
+              !itemExistsNoFollow(upperRenameFlushRollbackSource),
+              !itemExistsNoFollow(upperRenameFlushRollbackDestination),
+              !FileManager.default.fileExists(atPath: upperRenameFlushRollbackWhiteout) else {
+            throw SmokeError("failed rename flush rollback left moved upper state")
+        }
+        _ = try lookupItem(volume: volume, name: FSFileName(string: "rename-flush-rollback-source.txt"), directory: workspace)
+        do {
+            _ = try lookupItem(volume: volume, name: FSFileName(string: "rename-flush-rollback-dest.txt"), directory: workspace)
+            throw SmokeError("failed rename flush rollback exposed destination")
         } catch let error as NSError where error.domain == NSPOSIXErrorDomain && error.code == Int(ENOENT) {
         }
         let renameHiddenRollback = OSIxItem(relativePath: renameHiddenRollbackSourcePath, physicalPath: lowerRenameHiddenRollbackSource, type: .file, source: .lower)
