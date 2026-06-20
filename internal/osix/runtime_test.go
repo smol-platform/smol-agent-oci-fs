@@ -446,11 +446,15 @@ func TestStatusPersistsStaleRuntimeStateAndRefreshesDirtyIndex(t *testing.T) {
 	}
 
 	target := filepath.Join(root, "merged")
+	lower := filepath.Join(root, "lower")
 	upper := filepath.Join(root, "upper")
 	work := filepath.Join(root, "work")
 	mustWrite(t, filepath.Join(upper, "agent", "workspace", "copied.txt"), "same\n")
 	mustWrite(t, filepath.Join(upper, "agent", "workspace", "changed.txt"), "changed\n")
 	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(lower, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(work, 0o700); err != nil {
@@ -466,6 +470,7 @@ func TestStatusPersistsStaleRuntimeStateAndRefreshesDirtyIndex(t *testing.T) {
 		SourceDigest: first.ManifestDigest,
 		Mode:         MountFUSE,
 		RW:           true,
+		LowerDir:     lower,
 		UpperDir:     upper,
 		WorkDir:      work,
 		State:        "mounted",
@@ -532,10 +537,11 @@ func TestStatusRejectsMissingParentSnapshotForDirtyIndex(t *testing.T) {
 		t.Fatal(err)
 	}
 	target := filepath.Join(root, "merged")
+	lower := filepath.Join(root, "lower")
 	upper := filepath.Join(root, "upper")
 	work := filepath.Join(root, "work")
 	mustWrite(t, filepath.Join(upper, "agent", "workspace", "changed.txt"), "changed\n")
-	for _, dir := range []string{target, work} {
+	for _, dir := range []string{target, lower, work} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -550,6 +556,7 @@ func TestStatusRejectsMissingParentSnapshotForDirtyIndex(t *testing.T) {
 		SourceDigest: "sha256:0000000000000000000000000000000000000000000000000000000000000000",
 		Mode:         MountFUSE,
 		RW:           true,
+		LowerDir:     lower,
 		UpperDir:     upper,
 		WorkDir:      work,
 		State:        "mounted",
@@ -732,6 +739,62 @@ func TestStatusRejectsMissingWorkdirMetadata(t *testing.T) {
 	}
 }
 
+func TestStatusRejectsMissingLowerdirMetadata(t *testing.T) {
+	root := t.TempDir()
+	if _, err := Init(root, InitOptions{
+		Base:          "example/base:latest",
+		Name:          "agent",
+		StateRef:      "local/agent",
+		Mount:         filepath.Join(root, "fs"),
+		DefaultBranch: "main",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fs := filepath.Join(root, "fs")
+	mustWrite(t, filepath.Join(fs, "agent", "workspace", "file.txt"), "v1\n")
+	first, err := Snapshot(root, fs, SnapshotOptions{Tag: "snap-000001"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	target := filepath.Join(root, "merged")
+	upper := filepath.Join(root, "upper")
+	work := filepath.Join(root, "work")
+	mustWrite(t, filepath.Join(upper, "agent", "workspace", "file.txt"), "v2\n")
+	for _, dir := range []string{target, work} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, err := findStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.writeMount(MountInfo{
+		Target:       absPath(target),
+		SourceRef:    "snap-000001",
+		SourceDigest: first.ManifestDigest,
+		Mode:         MountFUSE,
+		RW:           true,
+		UpperDir:     upper,
+		WorkDir:      work,
+		State:        "mounted",
+		PID:          os.Getpid(),
+		CreatedAt:    time.Now().UTC().Truncate(time.Second),
+		UpdatedAt:    time.Now().UTC().Truncate(time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = NewMountRuntime(root, MountAuto).Status(context.Background(), target)
+	if err == nil || !strings.Contains(err.Error(), "runtime metadata missing lower directory") {
+		t.Fatalf("expected missing lowerdir metadata error, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(work), "dirty.json")); !os.IsNotExist(err) {
+		t.Fatalf("dirty index should not be written after lowerdir validation failure, stat err=%v", err)
+	}
+}
+
 func TestPersistMountedRuntimeRollsBackOnMetadataFailure(t *testing.T) {
 	root := t.TempDir()
 	if _, err := Init(root, InitOptions{
@@ -799,6 +862,7 @@ func TestSnapshotUsesOverlayUpperdirWhiteouts(t *testing.T) {
 	target := filepath.Join(root, "merged")
 	mustWrite(t, filepath.Join(target, "agent", "workspace", "file.txt"), "v2\n")
 	mustWrite(t, filepath.Join(target, "agent", "workspace", "new.txt"), "new\n")
+	lower := filepath.Join(root, "lower")
 	upper := filepath.Join(root, "upper")
 	mustWrite(t, filepath.Join(upper, "agent", "workspace", "file.txt"), "v2\n")
 	mustWrite(t, filepath.Join(upper, "agent", "workspace", "new.txt"), "new\n")
@@ -813,6 +877,9 @@ func TestSnapshotUsesOverlayUpperdirWhiteouts(t *testing.T) {
 	mustWrite(t, filepath.Join(upper, ".wh..env"), "")
 	mustWrite(t, filepath.Join(upper, ".osix", ".wh.mount.json"), "")
 	mustWrite(t, filepath.Join(upper, "agent", "tmp", ".wh.scratch.txt"), "")
+	if err := os.MkdirAll(lower, 0o700); err != nil {
+		t.Fatal(err)
+	}
 
 	s, err := findStore(root)
 	if err != nil {
@@ -824,6 +891,7 @@ func TestSnapshotUsesOverlayUpperdirWhiteouts(t *testing.T) {
 		SourceDigest: first.ManifestDigest,
 		Mode:         MountOverlay,
 		RW:           true,
+		LowerDir:     lower,
 		UpperDir:     upper,
 		WorkDir:      filepath.Join(root, "work"),
 		State:        "mounted",
@@ -955,9 +1023,13 @@ func TestWatchUsesRuntimeUpperDirtyBytes(t *testing.T) {
 
 	target := filepath.Join(root, "merged")
 	mustWrite(t, filepath.Join(target, "agent", "workspace", "large.txt"), strings.Repeat("x", 2048))
+	lower := filepath.Join(root, "lower")
 	upper := filepath.Join(root, "upper")
 	mustWrite(t, filepath.Join(upper, "agent", "workspace", "large.txt"), strings.Repeat("x", 2048))
 	mustWrite(t, filepath.Join(upper, "agent", "workspace", "tiny.txt"), "1")
+	if err := os.MkdirAll(lower, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	s, err := findStore(root)
 	if err != nil {
 		t.Fatal(err)
@@ -968,6 +1040,7 @@ func TestWatchUsesRuntimeUpperDirtyBytes(t *testing.T) {
 		SourceDigest: first.ManifestDigest,
 		Mode:         MountFUSE,
 		RW:           true,
+		LowerDir:     lower,
 		UpperDir:     upper,
 		WorkDir:      filepath.Join(root, "work"),
 		State:        "mounted",

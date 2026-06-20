@@ -275,7 +275,7 @@ func validateRuntimePermissions(info MountInfo) error {
 	}{
 		{name: "upper", path: info.UpperDir, required: info.Mode == MountOverlay || info.Mode == MountFUSE},
 		{name: "work", path: info.WorkDir, required: info.Mode == MountOverlay || info.Mode == MountFUSE},
-		{name: "lower", path: info.LowerDir},
+		{name: "lower", path: info.LowerDir, required: info.Mode == MountOverlay || info.Mode == MountFUSE},
 	} {
 		if strings.TrimSpace(dir.path) == "" {
 			if dir.required {
