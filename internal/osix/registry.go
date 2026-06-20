@@ -101,6 +101,9 @@ func PushSnapshot(workspaceRoot, remoteRepo, ref string, extraTags []string) err
 				}
 			}
 		}
+		if err := pushSnapshotReferrers(s, client, item.Digest, int64(len(manifestData))); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -169,12 +172,165 @@ func pullManifestRecursive(s store, client registryClient, ref string) (string, 
 			return "", err
 		}
 	}
+	if err := pullSnapshotReferrers(s, client, digest); err != nil {
+		return "", err
+	}
 	return digest, nil
+}
+
+func pushSnapshotReferrers(s store, client registryClient, subjectDigest string, subjectSize int64) error {
+	subjectDesc := Descriptor{
+		MediaType: MediaTypeOCIManifest,
+		Digest:    subjectDigest,
+		Size:      subjectSize,
+	}
+	emptyConfig := []byte("{}")
+	for _, artifact := range []struct {
+		refName   string
+		mediaType string
+	}{
+		{refName: signatureRefName(subjectDigest), mediaType: MediaTypeSignature},
+		{refName: provenanceRefName(subjectDigest), mediaType: MediaTypeProvenance},
+	} {
+		artifactDigest, err := s.resolveRef(artifact.refName)
+		if err != nil {
+			continue
+		}
+		artifactData, err := s.readBlob(artifactDigest)
+		if err != nil {
+			return err
+		}
+		if err := client.putBlob(artifactDigest, artifactData); err != nil {
+			return err
+		}
+		if err := client.putBlob(digestBytes(emptyConfig), emptyConfig); err != nil {
+			return err
+		}
+		manifestData, err := artifactReferrerManifest(subjectDesc, artifact.mediaType, artifactDigest, int64(len(artifactData)), emptyConfig)
+		if err != nil {
+			return err
+		}
+		manifestDigest := digestBytes(manifestData)
+		if err := client.putManifest(manifestDigest, manifestData); err != nil {
+			return err
+		}
+		if err := client.putManifest(artifact.refName, manifestData); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func artifactReferrerManifest(subject Descriptor, artifactType, blobDigest string, blobSize int64, emptyConfig []byte) ([]byte, error) {
+	manifest := Manifest{
+		SchemaVersion: 2,
+		MediaType:     MediaTypeOCIManifest,
+		ArtifactType:  artifactType,
+		Config: Descriptor{
+			MediaType: MediaTypeEmptyConfig,
+			Digest:    digestBytes(emptyConfig),
+			Size:      int64(len(emptyConfig)),
+		},
+		Layers: []Descriptor{{
+			MediaType: artifactType,
+			Digest:    blobDigest,
+			Size:      blobSize,
+		}},
+		Subject: &Descriptor{
+			MediaType: subject.MediaType,
+			Digest:    subject.Digest,
+			Size:      subject.Size,
+		},
+	}
+	return json.Marshal(manifest)
+}
+
+func pullSnapshotReferrers(s store, client registryClient, subjectDigest string) error {
+	pulled := map[string]bool{}
+	referrers, err := client.getReferrers(subjectDigest)
+	if err == nil {
+		for _, desc := range referrers {
+			if desc.ArtifactType != MediaTypeSignature && desc.ArtifactType != MediaTypeProvenance {
+				continue
+			}
+			if err := pullReferrerManifest(s, client, desc.Digest, subjectDigest); err != nil {
+				return err
+			}
+			pulled[desc.ArtifactType] = true
+		}
+	}
+	for _, artifact := range []struct {
+		refName   string
+		mediaType string
+	}{
+		{refName: signatureRefName(subjectDigest), mediaType: MediaTypeSignature},
+		{refName: provenanceRefName(subjectDigest), mediaType: MediaTypeProvenance},
+	} {
+		if pulled[artifact.mediaType] {
+			continue
+		}
+		if err := pullReferrerManifest(s, client, artifact.refName, subjectDigest); err != nil && !isRegistryNotFound(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+func pullReferrerManifest(s store, client registryClient, ref, subjectDigest string) error {
+	manifestData, _, err := client.getManifest(ref)
+	if err != nil {
+		return err
+	}
+	var manifest Manifest
+	if err := json.Unmarshal(manifestData, &manifest); err != nil {
+		return fmt.Errorf("parse referrer manifest %s: %w", ref, err)
+	}
+	if manifest.Subject == nil || manifest.Subject.Digest != subjectDigest {
+		return fmt.Errorf("referrer %s subject mismatch", ref)
+	}
+	if manifest.ArtifactType != MediaTypeSignature && manifest.ArtifactType != MediaTypeProvenance {
+		return nil
+	}
+	if len(manifest.Layers) != 1 {
+		return fmt.Errorf("referrer %s has %d blobs, want 1", ref, len(manifest.Layers))
+	}
+	layer := manifest.Layers[0]
+	data, err := client.getBlob(layer.Digest)
+	if err != nil {
+		return err
+	}
+	if _, err := s.writeBlob(data); err != nil {
+		return err
+	}
+	switch manifest.ArtifactType {
+	case MediaTypeSignature:
+		return s.writeRef(signatureRefName(subjectDigest), layer.Digest)
+	case MediaTypeProvenance:
+		return s.writeRef(provenanceRefName(subjectDigest), layer.Digest)
+	default:
+		return nil
+	}
 }
 
 type registryRepo struct {
 	Registry string
 	Repo     string
+}
+
+type registryStatusError struct {
+	op     string
+	ref    string
+	status string
+	code   int
+}
+
+func (e registryStatusError) Error() string {
+	return fmt.Sprintf("%s %s: %s", e.op, e.ref, e.status)
+}
+
+func isRegistryNotFound(err error) bool {
+	statusErr, ok := err.(registryStatusError)
+	return ok && statusErr.code == http.StatusNotFound
 }
 
 func parseRegistryRepo(remoteRepo string) (registryRepo, error) {
@@ -318,7 +474,7 @@ func (c registryClient) getBlob(digest string) ([]byte, error) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		io.Copy(io.Discard, resp.Body)
-		return nil, fmt.Errorf("get blob %s: %s", digest, resp.Status)
+		return nil, registryStatusError{op: "get blob", ref: digest, status: resp.Status, code: resp.StatusCode}
 	}
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -361,7 +517,7 @@ func (c registryClient) getManifest(ref string) ([]byte, string, error) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		io.Copy(io.Discard, resp.Body)
-		return nil, "", fmt.Errorf("get manifest %s: %s", ref, resp.Status)
+		return nil, "", registryStatusError{op: "get manifest", ref: ref, status: resp.Status, code: resp.StatusCode}
 	}
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -375,6 +531,28 @@ func (c registryClient) getManifest(ref string) ([]byte, string, error) {
 		return nil, "", fmt.Errorf("remote manifest %s digest mismatch: got %s", digest, got)
 	}
 	return data, digest, nil
+}
+
+func (c registryClient) getReferrers(subjectDigest string) ([]Descriptor, error) {
+	req, err := http.NewRequest(http.MethodGet, c.url("/v2/"+c.repo+"/referrers/"+subjectDigest), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", MediaTypeOCIIndex)
+	resp, err := c.do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		io.Copy(io.Discard, resp.Body)
+		return nil, registryStatusError{op: "get referrers", ref: subjectDigest, status: resp.Status, code: resp.StatusCode}
+	}
+	var index Index
+	if err := json.NewDecoder(resp.Body).Decode(&index); err != nil {
+		return nil, fmt.Errorf("decode referrers for %s: %w", subjectDigest, err)
+	}
+	return index.Manifests, nil
 }
 
 func (c registryClient) url(p string) string {

@@ -62,7 +62,12 @@ osix snapshot ./agentfs \
   --attest slsa
 ```
 
-Signatures and attestations SHOULD be attached as OCI referrers to the snapshot manifest.
+Signatures and attestations SHOULD be attached as OCI referrers to the snapshot
+manifest. v0 also publishes deterministic fallback tags for registries that can
+store subject-bearing manifests but cannot list them through the Referrers API.
+Pull clients import signature/provenance artifacts when present, but basic
+restore remains possible without them unless verification policy requires a
+signature.
 
 ## Provenance
 
@@ -137,4 +142,3 @@ Snapshot config SHOULD include:
 - signature referrer digest when available
 
 Clients SHOULD fail closed when required integrity metadata is missing or invalid.
-

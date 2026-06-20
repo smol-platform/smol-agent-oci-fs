@@ -6,9 +6,11 @@ const (
 	Version = "0.1"
 
 	MediaTypeOCIManifest = "application/vnd.oci.image.manifest.v1+json"
+	MediaTypeOCIIndex    = "application/vnd.oci.image.index.v1+json"
 	MediaTypeConfig      = "application/vnd.osix.agent.config.v1+json"
 	MediaTypeLayer       = "application/vnd.osix.agent.layer.diff.v1.tar+zstd"
 	MediaTypeLayerEnc    = "application/vnd.osix.agent.layer.diff.v1.tar+zstd+encrypted"
+	MediaTypeEmptyConfig = "application/vnd.osix.empty.v1+json"
 	MediaTypeSignature   = "application/vnd.osix.agent.signature.v1+json"
 	MediaTypeProvenance  = "application/vnd.osix.agent.provenance.v1+json"
 	ArtifactTypeSnapshot = "application/vnd.osix.agent.snapshot.v1"
@@ -89,10 +91,11 @@ type TreeEntry struct {
 }
 
 type Descriptor struct {
-	MediaType   string            `json:"mediaType"`
-	Digest      string            `json:"digest"`
-	Size        int64             `json:"size"`
-	Annotations map[string]string `json:"annotations,omitempty"`
+	MediaType    string            `json:"mediaType"`
+	ArtifactType string            `json:"artifactType,omitempty"`
+	Digest       string            `json:"digest"`
+	Size         int64             `json:"size"`
+	Annotations  map[string]string `json:"annotations,omitempty"`
 }
 
 type Manifest struct {
@@ -102,6 +105,13 @@ type Manifest struct {
 	Config        Descriptor        `json:"config"`
 	Layers        []Descriptor      `json:"layers"`
 	Annotations   map[string]string `json:"annotations,omitempty"`
+	Subject       *Descriptor       `json:"subject,omitempty"`
+}
+
+type Index struct {
+	SchemaVersion int          `json:"schemaVersion"`
+	MediaType     string       `json:"mediaType"`
+	Manifests     []Descriptor `json:"manifests"`
 }
 
 type InitOptions struct {

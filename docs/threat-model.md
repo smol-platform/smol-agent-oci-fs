@@ -32,6 +32,5 @@
 - `mount` is a materialized writable copy, not kernel overlayfs/fuse-overlayfs.
 - AWS KMS integration is local envelope behavior in v0, not a live AWS API call.
 - Full Sigstore transparency log and keyless identity verification are not implemented.
-- OCI Referrers API publication for signatures/provenance is not implemented.
+- OCI Referrers API publication for OSIx-native signatures/provenance is implemented with fallback tags; full Sigstore registry artifact compatibility is not implemented.
 - Lazy encrypted chunk reads are not implemented.
-

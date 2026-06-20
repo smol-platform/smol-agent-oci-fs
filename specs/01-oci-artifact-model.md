@@ -163,6 +163,21 @@ When supported by the registry, implementations SHOULD attach these artifacts as
 
 Referrers MUST NOT be required for basic v0 restore. A client that can pull the snapshot manifest and its layers MUST be able to restore state.
 
+For v0 image-mode compatibility, OSIx publishes signature and provenance
+payloads as subject-bearing OCI image manifests whose `artifactType` is the OSIx
+signature or provenance media type. The JSON payload is stored as the single
+layer blob, and the manifest subject points at the snapshot manifest digest. The
+same artifact manifests are also published under fallback tags derived from the
+subject digest:
+
+```text
+signature-<snapshot-manifest-hex>
+provenance-<snapshot-manifest-hex>
+```
+
+Pull clients SHOULD query the OCI Referrers API first and fall back to those
+tags when a registry does not expose referrer discovery.
+
 ## Branch Pointers
 
 Branches are represented by tags:
@@ -181,4 +196,3 @@ Immutable references are represented by digests:
 ```
 
 Implementations SHOULD warn when restoring from mutable tags unless the resolved digest is recorded.
-

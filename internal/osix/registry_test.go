@@ -145,6 +145,72 @@ func TestPushPullSnapshotThroughBearerAuthRegistry(t *testing.T) {
 	}
 }
 
+func TestPushPullSignedSnapshotReferrersThroughOCIRegistry(t *testing.T) {
+	reg := newFakeRegistry()
+	server := httptest.NewServer(reg)
+	defer server.Close()
+	u, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := u.Host + "/acme/signed-agent-state"
+
+	source := t.TempDir()
+	if _, err := Init(source, InitOptions{
+		Base:          "example/base:latest",
+		Name:          "agent",
+		StateRef:      repo,
+		Mount:         filepath.Join(source, "agentfs"),
+		DefaultBranch: "main",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fs := filepath.Join(source, "agentfs")
+	mustWrite(t, filepath.Join(fs, "agent", "workspace", "signed.md"), "signed\n")
+	snap, err := Snapshot(source, fs, SnapshotOptions{Tag: "signed", AlsoTag: "main", Sign: "keyless", Attest: "slsa"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	verify, err := VerifySnapshot(source, "signed", VerifyOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if verify.SignatureDigest == "" || verify.ProvenanceDigest == "" {
+		t.Fatalf("expected local signature and provenance, got %#v", verify)
+	}
+	if err := PushSnapshot(source, repo, "signed", []string{"release"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(reg.referrers["acme/signed-agent-state@"+snap.ManifestDigest]); got != 2 {
+		t.Fatalf("expected two indexed referrers, got %d", got)
+	}
+
+	dest := t.TempDir()
+	if _, err := Init(dest, InitOptions{
+		Base:          "example/base:latest",
+		Name:          "agent",
+		StateRef:      repo,
+		Mount:         filepath.Join(dest, "agentfs"),
+		DefaultBranch: "main",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	pulled, err := PullSnapshot(dest, repo+":release", "release")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pulled != snap.ManifestDigest {
+		t.Fatalf("pulled digest mismatch: want %s got %s", snap.ManifestDigest, pulled)
+	}
+	pulledVerify, err := VerifySnapshot(dest, "release", VerifyOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pulledVerify.SignatureDigest != verify.SignatureDigest || pulledVerify.ProvenanceDigest != verify.ProvenanceDigest {
+		t.Fatalf("pulled verify mismatch: want %#v got %#v", verify, pulledVerify)
+	}
+}
+
 func hasRef(refs []Ref, name string) bool {
 	for _, ref := range refs {
 		if ref.Name == name {
@@ -157,6 +223,7 @@ func hasRef(refs []Ref, name string) bool {
 type fakeRegistry struct {
 	blobs     map[string][]byte
 	manifests map[string][]byte
+	referrers map[string][]Descriptor
 	uploads   map[string]string
 	nextID    int
 }
@@ -213,6 +280,7 @@ func newFakeRegistry() *fakeRegistry {
 	return &fakeRegistry{
 		blobs:     map[string][]byte{},
 		manifests: map[string][]byte{},
+		referrers: map[string][]Descriptor{},
 		uploads:   map[string]string{},
 	}
 }
@@ -238,6 +306,12 @@ func (r *fakeRegistry) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			repo := strings.Join(parts[:i], "/")
 			ref := strings.Join(parts[i+1:], "/")
 			r.handleManifest(w, req, repo, ref)
+			return
+		}
+		if part == "referrers" && i+1 < len(parts) {
+			repo := strings.Join(parts[:i], "/")
+			digest := strings.Join(parts[i+1:], "/")
+			r.handleReferrers(w, req, repo, digest)
 			return
 		}
 	}
@@ -322,6 +396,18 @@ func (r *fakeRegistry) handleManifest(w http.ResponseWriter, req *http.Request, 
 		digest := digestBytes(body)
 		r.manifests[key] = body
 		r.manifests[repo+"@"+digest] = body
+		if manifest.Subject != nil && manifest.Subject.Digest != "" {
+			referrerKey := repo + "@" + manifest.Subject.Digest
+			desc := Descriptor{
+				MediaType:    manifest.MediaType,
+				ArtifactType: manifest.ArtifactType,
+				Digest:       digest,
+				Size:         int64(len(body)),
+			}
+			if !hasDescriptorDigest(r.referrers[referrerKey], digest) {
+				r.referrers[referrerKey] = append(r.referrers[referrerKey], desc)
+			}
+		}
 		w.Header().Set("Docker-Content-Digest", digest)
 		w.WriteHeader(http.StatusCreated)
 	case http.MethodGet:
@@ -340,6 +426,30 @@ func (r *fakeRegistry) handleManifest(w http.ResponseWriter, req *http.Request, 
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+func hasDescriptorDigest(descs []Descriptor, digest string) bool {
+	for _, desc := range descs {
+		if desc.Digest == digest {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *fakeRegistry) handleReferrers(w http.ResponseWriter, req *http.Request, repo, digest string) {
+	if req.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	index := Index{
+		SchemaVersion: 2,
+		MediaType:     MediaTypeOCIIndex,
+		Manifests:     r.referrers[repo+"@"+digest],
+	}
+	w.Header().Set("Content-Type", MediaTypeOCIIndex)
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(index)
 }
 
 func TestParseRegistryReference(t *testing.T) {
