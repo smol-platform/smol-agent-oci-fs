@@ -323,59 +323,66 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
         do {
             let current = try currentItem(for: item)
             let options = xattrOptions(for: current.type)
-            switch policy {
-            case .delete:
-                try requireXattrExists(rawName, item: current, options: options)
-                let hadUpperItem = hasUpperItem(for: current.relativePath)
-                let existingUpperParent = nearestExistingUpperParent(for: current.relativePath)
-                let path = try ensureUpperItem(for: current)
-                if removexattr(path, rawName, options) != 0 {
-                    if errno != ENOATTR {
-                        let error = posixError(errno)
-                        if !hadUpperItem {
-                            removeCreatedUpperItemAndEmptyParents(current.relativePath, stoppingAt: existingUpperParent)
-                        }
-                        throw error
-                    }
-                }
-            case .alwaysSet, .mustCreate, .mustReplace:
-                let flags: Int32
+            let hadUpperItem = hasUpperItem(for: current.relativePath)
+            let existingUpperParent = nearestExistingUpperParent(for: current.relativePath)
+            let upperBackup = try backupUpperItem(current.relativePath)
+            var mutated = false
+            do {
                 switch policy {
-                case .mustCreate:
-                    try requireXattrMissing(rawName, item: current, options: options)
-                    flags = XATTR_CREATE
-                case .mustReplace:
+                case .delete:
                     try requireXattrExists(rawName, item: current, options: options)
-                    flags = XATTR_REPLACE
-                default:
-                    flags = 0
-                }
-                let hadUpperItem = hasUpperItem(for: current.relativePath)
-                let existingUpperParent = nearestExistingUpperParent(for: current.relativePath)
-                let path = try ensureUpperItem(for: current)
-                let data = value ?? Data()
-                let status = data.withUnsafeBytes { rawBuffer in
-                    setxattr(path, rawName, rawBuffer.baseAddress, data.count, 0, options | flags)
-                }
-                if status != 0 {
-                    if current.source == .lower, current.type == .directory, errno == ENOATTR, policy == .mustReplace {
-                        let retryStatus = data.withUnsafeBytes { rawBuffer in
-                            setxattr(path, rawName, rawBuffer.baseAddress, data.count, 0, options)
-                        }
-                        if retryStatus == 0 {
-                            break
+                    let path = try ensureUpperItem(for: current)
+                    if removexattr(path, rawName, options) != 0 {
+                        if errno != ENOATTR {
+                            throw posixError(errno)
                         }
                     }
-                    let error = posixError(errno)
-                    if !hadUpperItem {
-                        removeCreatedUpperItemAndEmptyParents(current.relativePath, stoppingAt: existingUpperParent)
+                    mutated = true
+                case .alwaysSet, .mustCreate, .mustReplace:
+                    let flags: Int32
+                    switch policy {
+                    case .mustCreate:
+                        try requireXattrMissing(rawName, item: current, options: options)
+                        flags = XATTR_CREATE
+                    case .mustReplace:
+                        try requireXattrExists(rawName, item: current, options: options)
+                        flags = XATTR_REPLACE
+                    default:
+                        flags = 0
                     }
-                    throw error
+                    let path = try ensureUpperItem(for: current)
+                    let data = value ?? Data()
+                    let status = data.withUnsafeBytes { rawBuffer in
+                        setxattr(path, rawName, rawBuffer.baseAddress, data.count, 0, options | flags)
+                    }
+                    if status != 0 {
+                        if current.source == .lower, current.type == .directory, errno == ENOATTR, policy == .mustReplace {
+                            let retryStatus = data.withUnsafeBytes { rawBuffer in
+                                setxattr(path, rawName, rawBuffer.baseAddress, data.count, 0, options)
+                            }
+                            if retryStatus == 0 {
+                                mutated = true
+                                break
+                            }
+                        }
+                        throw posixError(errno)
+                    }
+                    mutated = true
+                @unknown default:
+                    throw posixError(EINVAL)
                 }
-            @unknown default:
-                throw posixError(EINVAL)
+                try flushDirtyIndex()
+                try discardStashedHiddenUpperItem(upperBackup)
+            } catch {
+                if mutated, let upperBackup {
+                    try restoreStashedHiddenUpperItem(upperBackup)
+                } else if !hadUpperItem {
+                    removeCreatedUpperItemAndEmptyParents(current.relativePath, stoppingAt: existingUpperParent)
+                } else {
+                    try discardStashedHiddenUpperItem(upperBackup)
+                }
+                throw error
             }
-            try flushDirtyIndex()
             reply(nil)
         } catch {
             reply(error)

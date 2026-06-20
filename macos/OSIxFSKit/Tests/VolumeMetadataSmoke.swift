@@ -886,6 +886,17 @@ struct VolumeMetadataSmoke {
         guard try listXattrs(volume: volume, item: item).contains("osix.smoke") else {
             throw SmokeError("listXattrs did not include osix.smoke")
         }
+        try? FileManager.default.removeItem(atPath: dirtyFile)
+        try FileManager.default.createDirectory(atPath: dirtyFile, withIntermediateDirectories: false)
+        do {
+            try setXattr(volume: volume, name: xattrName, value: Data("rollback".utf8), item: item, policy: .alwaysSet)
+            throw SmokeError("setXattr succeeded despite dirty flush failure")
+        } catch let error as NSError where error.domain == NSPOSIXErrorDomain || error.domain == NSCocoaErrorDomain {
+        }
+        try FileManager.default.removeItem(atPath: dirtyFile)
+        guard try getXattr(volume: volume, name: xattrName, item: item) == Data("one".utf8) else {
+            throw SmokeError("failed setXattr flush rollback did not restore previous xattr value")
+        }
         try setXattr(volume: volume, name: xattrName, value: Data("two".utf8), item: item, policy: .mustReplace)
         guard try getXattr(volume: volume, name: xattrName, item: item) == Data("two".utf8) else {
             throw SmokeError("setXattr mustReplace did not update the value")
