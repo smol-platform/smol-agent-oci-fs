@@ -114,6 +114,7 @@ func darwinFSKitMount(ctx context.Context, workspaceRoot, sourceRef, target stri
 	if err := darwinFSKitAvailable(); err != nil {
 		return MountInfo{}, err
 	}
+	mountTarget := absPath(target)
 	s, err := findStore(workspaceRoot)
 	if err != nil {
 		return MountInfo{}, err
@@ -126,7 +127,7 @@ func darwinFSKitMount(ctx context.Context, workspaceRoot, sourceRef, target stri
 	if err != nil {
 		return MountInfo{}, err
 	}
-	if err := os.MkdirAll(target, 0o755); err != nil {
+	if err := os.MkdirAll(mountTarget, 0o755); err != nil {
 		cleanupFreshKernelMountDirs(root, rootExisted)
 		return MountInfo{}, err
 	}
@@ -141,7 +142,7 @@ func darwinFSKitMount(ctx context.Context, workspaceRoot, sourceRef, target stri
 		"--workspace-root", absPath(workspaceRoot),
 		"--source-ref", sourceRef,
 		"--source-digest", digest,
-		"--target", target,
+		"--target", mountTarget,
 		"--lower", lower,
 		"--upper", upper,
 		"--work", work,
@@ -155,7 +156,7 @@ func darwinFSKitMount(ctx context.Context, workspaceRoot, sourceRef, target stri
 	}
 	now := time.Now().UTC().Truncate(time.Second)
 	info := MountInfo{
-		Target:       absPath(target),
+		Target:       mountTarget,
 		SourceRef:    sourceRef,
 		SourceDigest: digest,
 		Mode:         mode,
@@ -169,7 +170,7 @@ func darwinFSKitMount(ctx context.Context, workspaceRoot, sourceRef, target stri
 		UpdatedAt:    now,
 	}
 	return persistMountedRuntime(s, root, info, []byte(string(mode)+"\nfskit\n"+darwinFSKitBundleID()+"\n"), func() error {
-		args := []string{"unmount", "--target", target, "--force"}
+		args := []string{"unmount", "--target", mountTarget, "--force"}
 		if out, runErr := exec.CommandContext(ctx, helper, args...).CombinedOutput(); runErr != nil {
 			return fmt.Errorf("unmount macOS FSKit filesystem after metadata failure: %s: %w", strings.TrimSpace(string(out)), runErr)
 		}
@@ -178,9 +179,10 @@ func darwinFSKitMount(ctx context.Context, workspaceRoot, sourceRef, target stri
 }
 
 func darwinFSKitUnmount(ctx context.Context, workspaceRoot, target string, info MountInfo, opts UnmountOptions) error {
+	mountTarget := absPath(target)
 	helper, err := darwinFSKitHelper()
 	if err == nil {
-		args := []string{"unmount", "--target", target}
+		args := []string{"unmount", "--target", mountTarget}
 		if opts.Force {
 			args = append(args, "--force")
 		}
@@ -191,7 +193,7 @@ func darwinFSKitUnmount(ctx context.Context, workspaceRoot, target string, info 
 		}
 	}
 	if opts.Force {
-		_ = exec.CommandContext(ctx, "diskutil", "unmount", "force", target).Run()
+		_ = exec.CommandContext(ctx, "diskutil", "unmount", "force", mountTarget).Run()
 		return markUnmounted(workspaceRoot, target)
 	}
 	return err

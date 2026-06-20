@@ -57,6 +57,76 @@ func TestDarwinFSKitHelperRequiresExecutableFile(t *testing.T) {
 	}
 }
 
+func TestDarwinFSKitMountPassesAbsoluteTargetToHelper(t *testing.T) {
+	if _, err := os.Stat("/System/Library/Frameworks/FSKit.framework"); err != nil {
+		t.Skipf("macOS FSKit framework unavailable: %v", err)
+	}
+	root := t.TempDir()
+	argsFile := filepath.Join(root, "helper-args.txt")
+	helperFile := filepath.Join(root, "osix-fskitctl")
+	helperScript := "#!/bin/sh\n" +
+		"if [ \"$1\" = doctor ]; then exit 0; fi\n" +
+		"printf '%s\\n' \"$@\" > \"$OSIX_FSKIT_HELPER_ARGS\"\n" +
+		"exit 42\n"
+	if err := os.WriteFile(helperFile, []byte(helperScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OSIX_FSKIT_HELPER", helperFile)
+	t.Setenv("OSIX_FSKIT_HELPER_ARGS", argsFile)
+
+	if _, err := Init(root, InitOptions{
+		Base:          "example/base:latest",
+		Name:          "agent",
+		StateRef:      "local/agent",
+		Mount:         filepath.Join(root, "fs"),
+		DefaultBranch: "main",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fs := filepath.Join(root, "fs")
+	mustWrite(t, filepath.Join(fs, "agent", "workspace", "file.txt"), "v1\n")
+	if _, err := Snapshot(root, fs, SnapshotOptions{Tag: "snap-000001"}); err != nil {
+		t.Fatal(err)
+	}
+
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := os.Chdir(oldWD); err != nil {
+			t.Fatalf("restore working directory: %v", err)
+		}
+	}()
+
+	relativeTarget := "relative-mount"
+	_, err = darwinFSKitMount(context.Background(), root, "snap-000001", relativeTarget, MountOptions{Force: true, Mode: MountOverlay}, MountOverlay)
+	if err == nil {
+		t.Fatalf("expected fake helper mount failure")
+	}
+	argsData, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := strings.Split(strings.TrimSpace(string(argsData)), "\n")
+	expectedTarget := absPath(relativeTarget)
+	found := false
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "--target" {
+			found = true
+			if args[i+1] != expectedTarget {
+				t.Fatalf("helper --target = %q, want %q; args=%#v", args[i+1], expectedTarget, args)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("helper args missing --target: %#v", args)
+	}
+}
+
 func TestDarwinAutoFallsBackToMaterializedWhenFSKitUnavailable(t *testing.T) {
 	t.Setenv("OSIX_FSKIT_HELPER", filepath.Join(t.TempDir(), "missing-osix-fskitctl"))
 	root := t.TempDir()
