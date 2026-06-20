@@ -50,9 +50,11 @@ struct OSIxMountOptions {
             throw OSIxMountOptionsValidationError(description: "unsupported OSIx FSKit mount mode \(mode ?? "")")
         }
 
+        try validateDirectory(path: workspace!, option: "osix.workspace")
         try validateDirectory(path: lower!, option: "osix.lower")
         try validateDirectory(path: upper!, option: "osix.upper")
         try validateDirectory(path: work!, option: "osix.work")
+        try validateSourceDigest(sourceDigest!)
     }
 
     private func validateDirectory(path: String, option: String) throws {
@@ -62,6 +64,18 @@ struct OSIxMountOptions {
         }
         guard statBuffer.st_mode & S_IFMT == S_IFDIR else {
             throw OSIxMountOptionsValidationError(description: "\(option) \(path) is not a directory")
+        }
+    }
+
+    private func validateSourceDigest(_ digest: String) throws {
+        let prefix = "sha256:"
+        guard digest.hasPrefix(prefix) else {
+            throw OSIxMountOptionsValidationError(description: "osix.source_digest must be a sha256 digest")
+        }
+        let hex = digest.dropFirst(prefix.count)
+        let hexDigits = CharacterSet(charactersIn: "0123456789abcdefABCDEF")
+        guard hex.count == 64, hex.unicodeScalars.allSatisfy({ hexDigits.contains($0) }) else {
+            throw OSIxMountOptionsValidationError(description: "osix.source_digest must be a sha256 digest")
         }
     }
 

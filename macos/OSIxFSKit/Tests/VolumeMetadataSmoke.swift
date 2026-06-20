@@ -1021,11 +1021,12 @@ struct VolumeMetadataSmoke {
     }
 
     static func validateMountOptions(lower: String, upper: String, work: String) throws {
+        let validDigest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         try OSIxMountOptions(
             bundle: nil,
             workspace: URL(fileURLWithPath: work).deletingLastPathComponent().path,
             sourceRef: "snap-000001",
-            sourceDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            sourceDigest: validDigest,
             lower: lower,
             upper: upper,
             work: work,
@@ -1038,6 +1039,20 @@ struct VolumeMetadataSmoke {
         } catch is OSIxMountOptionsValidationError {
         }
 
+        let workspaceFile = URL(fileURLWithPath: work).deletingLastPathComponent().appendingPathComponent("workspace-file").path
+        FileManager.default.createFile(atPath: workspaceFile, contents: Data("not a directory".utf8))
+        do {
+            try OSIxMountOptions(bundle: nil, workspace: workspaceFile, sourceRef: "snap-000001", sourceDigest: validDigest, lower: lower, upper: upper, work: work, mode: "overlay").validateForMount()
+            throw SmokeError("mount options accepted non-directory workspace")
+        } catch is OSIxMountOptionsValidationError {
+        }
+
+        do {
+            try OSIxMountOptions(bundle: nil, workspace: work, sourceRef: "snap-000001", sourceDigest: "not-a-digest", lower: lower, upper: upper, work: work, mode: "overlay").validateForMount()
+            throw SmokeError("mount options accepted malformed source digest")
+        } catch is OSIxMountOptionsValidationError {
+        }
+
         do {
             try OSIxMountOptions(bundle: nil, workspace: work, sourceRef: "snap-000001", sourceDigest: "sha256:digest", lower: lower, upper: upper, work: work, mode: "materialized").validateForMount()
             throw SmokeError("mount options accepted unsupported mode")
@@ -1047,7 +1062,7 @@ struct VolumeMetadataSmoke {
         let workSymlink = URL(fileURLWithPath: work).deletingLastPathComponent().appendingPathComponent("work-link").path
         try FileManager.default.createSymbolicLink(atPath: workSymlink, withDestinationPath: work)
         do {
-            try OSIxMountOptions(bundle: nil, workspace: work, sourceRef: "snap-000001", sourceDigest: "sha256:digest", lower: lower, upper: upper, work: workSymlink, mode: "overlay").validateForMount()
+            try OSIxMountOptions(bundle: nil, workspace: work, sourceRef: "snap-000001", sourceDigest: validDigest, lower: lower, upper: upper, work: workSymlink, mode: "overlay").validateForMount()
             throw SmokeError("mount options accepted symlink workdir")
         } catch is OSIxMountOptionsValidationError {
         }
