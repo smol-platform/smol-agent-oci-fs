@@ -161,6 +161,19 @@ func TestDarwinFSKitMountPassesAbsoluteTargetToHelper(t *testing.T) {
 	assertFlagValue(t, args, "--target", absPath(relativeTarget))
 	assertFlagValue(t, args, "--fstype", "ExampleFS")
 	assertFlagValue(t, args, "--rw", "true")
+
+	defaultTarget := "default-rw-mount"
+	_, err = darwinFSKitMount(context.Background(), root, "snap-000001", defaultTarget, MountOptions{Force: true, Mode: MountOverlay}, MountOverlay)
+	if err == nil {
+		t.Fatalf("expected fake helper mount failure")
+	}
+	argsData, err = os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args = strings.Split(strings.TrimSpace(string(argsData)), "\n")
+	assertFlagValue(t, args, "--target", absPath(defaultTarget))
+	assertFlagMissing(t, args, "--rw")
 }
 
 func TestDarwinFSKitUnmountUsesStoredTarget(t *testing.T) {
@@ -245,6 +258,15 @@ func assertFlagValue(t *testing.T, args []string, flag, value string) {
 		}
 	}
 	t.Fatalf("helper args missing %s: %#v", flag, args)
+}
+
+func assertFlagMissing(t *testing.T, args []string, flag string) {
+	t.Helper()
+	for _, arg := range args {
+		if arg == flag {
+			t.Fatalf("helper args unexpectedly included %s: %#v", flag, args)
+		}
+	}
 }
 
 func TestDarwinAutoFallsBackToMaterializedWhenFSKitUnavailable(t *testing.T) {
