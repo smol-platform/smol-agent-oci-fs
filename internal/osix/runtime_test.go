@@ -692,6 +692,7 @@ func TestSnapshotUsesOverlayUpperdirWhiteouts(t *testing.T) {
 	mustWrite(t, filepath.Join(fs, "agent", "workspace", "old.txt"), "old\n")
 	mustWrite(t, filepath.Join(fs, "agent", "workspace", "copied.txt"), "same\n")
 	mustWrite(t, filepath.Join(fs, "agent", "workspace", "hidden-dir", "child.txt"), "parent child\n")
+	mustWrite(t, filepath.Join(fs, "agent", "workspace", "opaque-dir", "old.txt"), "opaque old\n")
 	first, err := Snapshot(root, fs, SnapshotOptions{Tag: "snap-000001"})
 	if err != nil {
 		t.Fatal(err)
@@ -708,6 +709,8 @@ func TestSnapshotUsesOverlayUpperdirWhiteouts(t *testing.T) {
 	mustWrite(t, filepath.Join(upper, "agent", "workspace", "old.txt"), "hidden\n")
 	mustWrite(t, filepath.Join(upper, "agent", "workspace", ".wh.hidden-dir"), "")
 	mustWrite(t, filepath.Join(upper, "agent", "workspace", "hidden-dir", "child.txt"), "hidden child\n")
+	mustWrite(t, filepath.Join(upper, "agent", "workspace", "opaque-dir", ".wh..wh..opq"), "")
+	mustWrite(t, filepath.Join(upper, "agent", "workspace", "opaque-dir", "new.txt"), "opaque new\n")
 	mustWrite(t, filepath.Join(upper, ".wh..env"), "")
 	mustWrite(t, filepath.Join(upper, ".osix", ".wh.mount.json"), "")
 	mustWrite(t, filepath.Join(upper, "agent", "tmp", ".wh.scratch.txt"), "")
@@ -741,6 +744,8 @@ func TestSnapshotUsesOverlayUpperdirWhiteouts(t *testing.T) {
 		"D /agent/workspace/hidden-dir",
 		"A /agent/workspace/new.txt",
 		"D /agent/workspace/old.txt",
+		"D /agent/workspace/opaque-dir",
+		"A /agent/workspace/opaque-dir/new.txt",
 	}
 	if got := changeStrings(changes); !reflect.DeepEqual(got, wantChanges) {
 		t.Fatalf("upperdir changes mismatch\nwant: %#v\n got: %#v", wantChanges, got)
@@ -752,14 +757,22 @@ func TestSnapshotUsesOverlayUpperdirWhiteouts(t *testing.T) {
 	assertLayerEntries(t, root, second.ManifestDigest, []string{
 		"agent/workspace/.wh.hidden-dir",
 		"agent/workspace/.wh.old.txt",
+		"agent/workspace/.wh.opaque-dir",
 		"agent/workspace/file.txt",
 		"agent/workspace/new.txt",
+		"agent/workspace/opaque-dir/new.txt",
 	})
+	restore := filepath.Join(root, "restore-overlay")
+	if err := Restore(root, second.ManifestDigest, restore, RestoreOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	assertMissing(t, filepath.Join(restore, "agent", "workspace", "opaque-dir", "old.txt"))
+	assertFile(t, filepath.Join(restore, "agent", "workspace", "opaque-dir", "new.txt"), "opaque new\n")
 	_, _, cfg, err := s.loadManifest(second.ManifestDigest)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Snapshot.DirtyBytes != int64(len("v2\n")+len("new\n")) {
+	if cfg.Snapshot.DirtyBytes != int64(len("v2\n")+len("new\n")+len("opaque new\n")) {
 		t.Fatalf("dirty bytes = %d, want modified+new bytes", cfg.Snapshot.DirtyBytes)
 	}
 }

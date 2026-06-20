@@ -318,9 +318,6 @@ func diffOverlayUpper(parent, upper []TreeEntry, whiteouts []string) []Change {
 		changes = append(changes, Change{Kind: kind, Path: "/" + entry.Path})
 	}
 	for _, path := range whiteouts {
-		if seen[path] {
-			continue
-		}
 		seen[path] = true
 		changes = append(changes, Change{Kind: "D", Path: "/" + path})
 	}
@@ -822,6 +819,7 @@ func scanOverlayUpper(root string) ([]TreeEntry, []string, int64, error) {
 		return nil, nil, 0, err
 	}
 	whiteoutSet := map[string]bool{}
+	opaqueSet := map[string]bool{}
 	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -844,6 +842,10 @@ func scanOverlayUpper(root string) ([]TreeEntry, []string, int64, error) {
 		if target != "" && !shouldExclude(target) {
 			whiteoutSet[target] = true
 		}
+		opaqueTarget := overlayOpaqueTarget(rel)
+		if opaqueTarget != "" && !shouldExclude(opaqueTarget) {
+			opaqueSet[opaqueTarget] = true
+		}
 		return nil
 	})
 	if err != nil {
@@ -851,13 +853,16 @@ func scanOverlayUpper(root string) ([]TreeEntry, []string, int64, error) {
 	}
 	var filtered []TreeEntry
 	for _, entry := range entries {
-		if overlayWhiteoutTarget(entry.Path) != "" || isCoveredByWhiteout(entry.Path, whiteoutSet) {
+		if isOverlayWhiteoutMarker(entry.Path) || isCoveredByWhiteout(entry.Path, whiteoutSet) {
 			continue
 		}
 		filtered = append(filtered, entry)
 	}
-	whiteouts := make([]string, 0, len(whiteoutSet))
+	whiteouts := make([]string, 0, len(whiteoutSet)+len(opaqueSet))
 	for target := range whiteoutSet {
+		whiteouts = append(whiteouts, target)
+	}
+	for target := range opaqueSet {
 		whiteouts = append(whiteouts, target)
 	}
 	sort.Strings(whiteouts)
@@ -887,6 +892,23 @@ func overlayWhiteoutTarget(path string) string {
 		return ""
 	}
 	return filepath.ToSlash(filepath.Join(dir, target))
+}
+
+func overlayOpaqueTarget(path string) string {
+	dir, base := filepath.Split(filepath.ToSlash(path))
+	if base != ".wh..wh..opq" {
+		return ""
+	}
+	target := strings.TrimSuffix(filepath.ToSlash(dir), "/")
+	if target == "" || target == "." {
+		return ""
+	}
+	return target
+}
+
+func isOverlayWhiteoutMarker(path string) bool {
+	_, base := filepath.Split(filepath.ToSlash(path))
+	return strings.HasPrefix(base, ".wh.")
 }
 
 func whiteoutName(target string) string {
