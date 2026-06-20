@@ -103,7 +103,39 @@ Mixed-recipient envelope:
   --decrypt endpoint:https://keys.example.test/wrap
 ```
 
-Age-only snapshots use age v1 directly. Single `kms:aws:kms:...` snapshots keep the legacy local KMS-style envelope. Mixed-recipient snapshots use the OSIx layer envelope: one random content key encrypted to each recipient. KMS, GPG, and endpoint recipients are local deterministic key-wrap shims keyed by the recipient string in this prototype; they exercise recipient metadata and restore authorization semantics without calling AWS KMS, `gpg`, or a remote service.
+Age-only snapshots use age v1 directly. Single `kms:aws:kms:...` snapshots keep the legacy local KMS-style envelope unless provider mode is enabled. Mixed-recipient snapshots use the OSIx layer envelope: one random content key encrypted to each recipient.
+
+Provider-backed wrapping is opt-in:
+
+```sh
+# AWS KMS through the AWS CLI.
+OSIX_KMS_PROVIDER=aws \
+  ./osix snapshot agentfs --tag aws-kms \
+  --encrypt kms:aws:kms:us-east-1:123456789012:key/demo
+
+OSIX_KMS_PROVIDER=aws \
+  ./osix restore aws-kms ./aws-kms-restore \
+  --decrypt kms:aws:kms:us-east-1:123456789012:key/demo
+
+# GPG through the gpg command.
+OSIX_GPG_PROVIDER=gpg \
+  ./osix snapshot agentfs --tag gpg \
+  --encrypt gpg:alice@example.com
+
+OSIX_GPG_PROVIDER=gpg \
+  ./osix restore gpg ./gpg-restore --decrypt gpg:alice@example.com
+
+# Generic HTTPS endpoint protocol.
+OSIX_ENDPOINT_PROVIDER=http \
+  ./osix snapshot agentfs --tag endpoint \
+  --encrypt endpoint:https://keys.example.test/wrap
+
+OSIX_ENDPOINT_PROVIDER=http \
+  ./osix restore endpoint ./endpoint-restore \
+  --decrypt endpoint:https://keys.example.test/wrap
+```
+
+Without provider mode, KMS, GPG, and endpoint recipients use local deterministic key-wrap shims for offline development and repeatable tests. Command-provider hooks are available through `OSIX_KMS_WRAP_COMMAND` and `OSIX_KMS_UNWRAP_COMMAND`; `OSIX_AWS_COMMAND`, `OSIX_GPG_COMMAND`, `OSIX_GPG_HOMEDIR`, `OSIX_ENDPOINT_TOKEN`, and `OSIX_KEYWRAP_TIMEOUT` tune the concrete providers.
 
 ## Watch
 

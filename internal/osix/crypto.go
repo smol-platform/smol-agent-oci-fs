@@ -67,7 +67,7 @@ func encryptLayer(data []byte, recipients string) ([]byte, map[string]string, er
 	if err != nil {
 		return nil, nil, err
 	}
-	if len(specs) == 1 && specs[0].Kind == "kms" && specs[0].Provider == "aws" && strings.HasPrefix(specs[0].Recipient, "kms:aws:kms:") {
+	if len(specs) == 1 && specs[0].Kind == "kms" && specs[0].Provider == "aws" && strings.HasPrefix(specs[0].Recipient, "kms:aws:kms:") && !kmsProviderEnabled() {
 		out, err := encryptKMS(data, specs[0].Recipient)
 		if err != nil {
 			return nil, nil, err
@@ -288,6 +288,9 @@ func wrapEnvelopeKey(dek []byte, spec recipientSpec) (layerEnvelopeWrapKey, erro
 			WrappedKey: base64.StdEncoding.EncodeToString(buf.Bytes()),
 		}, nil
 	}
+	if wrap, ok, err := wrapProviderEnvelopeKey(dek, spec); ok || err != nil {
+		return wrap, err
+	}
 	block, err := aes.NewCipher(localRecipientKey(spec.Kind, spec.Recipient))
 	if err != nil {
 		return layerEnvelopeWrapKey{}, err
@@ -370,6 +373,9 @@ func unwrapEnvelopeKey(wrap layerEnvelopeWrapKey, material decryptMaterial) ([]b
 	case "kms", "gpg", "endpoint":
 		if !material.hasRecipient(wrap.Type, wrap.Recipient) {
 			return nil, false, nil
+		}
+		if dek, ok, err := unwrapProviderEnvelopeKey(wrap); ok || err != nil {
+			return dek, ok, err
 		}
 		dek, err := unwrapLocalEnvelopeKey(wrap)
 		if err != nil {

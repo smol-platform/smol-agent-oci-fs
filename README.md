@@ -120,7 +120,7 @@ Implemented commands:
 - `mount --mode overlay` requires Linux with overlayfs mount privileges, or macOS with the OSIx FSKit extension installed and enabled.
 - `mount --mode fuse` uses `fuse-overlayfs` on Linux and native FSKit on macOS.
 - Other non-Linux builds fall back to the materialized runtime unless a nonportable mode is requested explicitly.
-- Encryption supports age-only layers, a legacy single-recipient `kms:aws:kms:...` path, and mixed OSIx envelopes with `age:`, `kms:`, `gpg:`, and `endpoint:` recipients. KMS/GPG/endpoint recipients are local deterministic key-wrap shims in this prototype, not live external service calls.
+- Encryption supports age-only layers, a legacy local `kms:aws:kms:...` path, and mixed OSIx envelopes with `age:`, `kms:`, `gpg:`, and `endpoint:` recipients. Provider-backed wrapping is available through opt-in AWS CLI, `gpg`, and HTTP endpoint modes; offline local shims remain the default for KMS/GPG/endpoint recipients.
 - Signing is OSIx-native manifest-digest signing with ed25519 keys. It is cosign-style, but not yet emitted as a full Sigstore/cosign artifact.
 - `watch` is a bounded CLI scheduler with lifecycle state files, not a persistent daemon process.
 - Side-effect ledger validation and replay markers are implemented; external tool adapters are not part of this repo.

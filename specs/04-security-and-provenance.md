@@ -20,6 +20,8 @@ v0 SHOULD support:
 
 - `age:age1...`
 - `kms:aws:kms:region:account:key/key-id`
+- `gpg:recipient`
+- `endpoint:https://...`
 
 Future versions MAY support:
 
@@ -47,6 +49,8 @@ Layer descriptors MAY include minimal public encryption metadata:
 ```
 
 Public annotations MUST NOT expose sensitive path lists, secret names, prompts, memory content, tool inputs, or external resource payloads. Path-level indexes belong inside encrypted blobs.
+
+Provider-backed wrapping is opt-in in v0. AWS KMS uses the AWS CLI, GPG uses the `gpg` command, and endpoint recipients use a JSON HTTPS protocol with `wrap` and `unwrap` operations. Offline local key-wrap shims remain available for deterministic tests and development.
 
 ## Signing
 
