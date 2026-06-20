@@ -24,6 +24,7 @@ struct VolumeMetadataSmoke {
         let renameOverLowerFileDestinationPath = "agent/workspace/rename-over-lower-file-dest.txt"
         let failedAttributesPath = "agent/workspace/failed-attrs.txt"
         let cowDeletePath = "agent/workspace/cow-delete.txt"
+        let removeFlushRollbackPath = "agent/workspace/remove-flush-rollback.txt"
         let cowRenamePath = "agent/workspace/cow-rename.txt"
         let cowRenameDestinationPath = "agent/workspace/cow-renamed.txt"
         let renameHiddenRollbackSourcePath = "agent/workspace/rename-hidden-rollback-source.txt"
@@ -70,6 +71,7 @@ struct VolumeMetadataSmoke {
         let lowerRenameOverLowerFileDestination = URL(fileURLWithPath: lower).appendingPathComponent(renameOverLowerFileDestinationPath).path
         let lowerFailedAttributesFile = URL(fileURLWithPath: lower).appendingPathComponent(failedAttributesPath).path
         let lowerCOWDeleteFile = URL(fileURLWithPath: lower).appendingPathComponent(cowDeletePath).path
+        let lowerRemoveFlushRollbackFile = URL(fileURLWithPath: lower).appendingPathComponent(removeFlushRollbackPath).path
         let lowerCOWRenameFile = URL(fileURLWithPath: lower).appendingPathComponent(cowRenamePath).path
         let lowerRenameHiddenRollbackSource = URL(fileURLWithPath: lower).appendingPathComponent(renameHiddenRollbackSourcePath).path
         let lowerWriteFile = URL(fileURLWithPath: lower).appendingPathComponent(writePath).path
@@ -126,6 +128,8 @@ struct VolumeMetadataSmoke {
         let upperFailedAttributesFile = URL(fileURLWithPath: upper).appendingPathComponent(failedAttributesPath).path
         let upperCOWDeleteFile = URL(fileURLWithPath: upper).appendingPathComponent(cowDeletePath).path
         let upperCOWDeleteWhiteout = URL(fileURLWithPath: upper).appendingPathComponent("agent/workspace/.wh.cow-delete.txt").path
+        let upperRemoveFlushRollbackFile = URL(fileURLWithPath: upper).appendingPathComponent(removeFlushRollbackPath).path
+        let upperRemoveFlushRollbackWhiteout = URL(fileURLWithPath: upper).appendingPathComponent("agent/workspace/.wh.remove-flush-rollback.txt").path
         let upperCOWRenameDestination = URL(fileURLWithPath: upper).appendingPathComponent(cowRenameDestinationPath).path
         let upperCOWRenameWhiteout = URL(fileURLWithPath: upper).appendingPathComponent("agent/workspace/.wh.cow-rename.txt").path
         let upperRenameHiddenRollbackSource = URL(fileURLWithPath: upper).appendingPathComponent(renameHiddenRollbackSourcePath).path
@@ -182,6 +186,7 @@ struct VolumeMetadataSmoke {
         try Data("rename over lower destination".utf8).write(to: URL(fileURLWithPath: lowerRenameOverLowerFileDestination))
         try Data("failed attrs".utf8).write(to: URL(fileURLWithPath: lowerFailedAttributesFile))
         try Data("cow-delete".utf8).write(to: URL(fileURLWithPath: lowerCOWDeleteFile))
+        try Data("remove flush rollback lower".utf8).write(to: URL(fileURLWithPath: lowerRemoveFlushRollbackFile))
         try Data("cow-rename".utf8).write(to: URL(fileURLWithPath: lowerCOWRenameFile))
         try Data("hidden rollback source".utf8).write(to: URL(fileURLWithPath: lowerRenameHiddenRollbackSource))
         try Data("write".utf8).write(to: URL(fileURLWithPath: lowerWriteFile))
@@ -228,6 +233,7 @@ struct VolumeMetadataSmoke {
         try setRawXattr(path: lowerXattrDirectory, name: "osix.policy", value: Data("lower".utf8), options: 0)
         try FileManager.default.createDirectory(atPath: URL(fileURLWithPath: upperNonEmptyFile).deletingLastPathComponent().path, withIntermediateDirectories: true)
         try Data("upper child".utf8).write(to: URL(fileURLWithPath: upperNonEmptyFile))
+        try Data("remove flush rollback upper".utf8).write(to: URL(fileURLWithPath: upperRemoveFlushRollbackFile))
         try FileManager.default.createDirectory(atPath: upperExistingParentXattrDirectory, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(atPath: URL(fileURLWithPath: upperRenameOverUpperDirectoryDestinationFile).deletingLastPathComponent().path, withIntermediateDirectories: true)
         try Data("upper dir child".utf8).write(to: URL(fileURLWithPath: upperRenameOverUpperDirectoryDestinationFile))
@@ -764,6 +770,21 @@ struct VolumeMetadataSmoke {
             throw SmokeError("removing COW upper copy left lower item visible")
         } catch let error as NSError where error.domain == NSPOSIXErrorDomain && error.code == Int(ENOENT) {
         }
+        let removeFlushRollback = OSIxItem(relativePath: removeFlushRollbackPath, physicalPath: lowerRemoveFlushRollbackFile, type: .file, source: .lower)
+        try? FileManager.default.removeItem(atPath: dirtyFile)
+        try FileManager.default.createDirectory(atPath: dirtyFile, withIntermediateDirectories: false)
+        do {
+            try removeItem(volume: volume, item: removeFlushRollback, name: FSFileName(string: "remove-flush-rollback.txt"), directory: workspace)
+            throw SmokeError("removeItem succeeded despite dirty flush failure")
+        } catch let error as NSError where error.domain == NSPOSIXErrorDomain || error.domain == NSCocoaErrorDomain {
+        }
+        try FileManager.default.removeItem(atPath: dirtyFile)
+        guard (try? String(contentsOfFile: lowerRemoveFlushRollbackFile, encoding: .utf8)) == "remove flush rollback lower",
+              (try? String(contentsOfFile: upperRemoveFlushRollbackFile, encoding: .utf8)) == "remove flush rollback upper",
+              !FileManager.default.fileExists(atPath: upperRemoveFlushRollbackWhiteout) else {
+            throw SmokeError("failed removeItem flush rollback did not restore COW source state")
+        }
+        _ = try lookupItem(volume: volume, name: FSFileName(string: "remove-flush-rollback.txt"), directory: workspace)
         let cowRename = OSIxItem(relativePath: cowRenamePath, physicalPath: lowerCOWRenameFile, type: .file, source: .lower)
         let cowRenameRequest = FSItem.SetAttributesRequest()
         cowRenameRequest.size = 3
