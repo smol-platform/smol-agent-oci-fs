@@ -97,6 +97,7 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
             }
             let hadUpperItem = hasUpperItem(for: current.relativePath)
             let existingUpperParent = nearestExistingUpperParent(for: current.relativePath)
+            let upperBackup = try backupUpperItem(current.relativePath)
             var changed = false
             do {
                 changed = try applyAttributes(newAttributes, to: try ensureUpperItem(for: current), itemType: current.type)
@@ -107,7 +108,19 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
                 throw error
             }
             if changed {
-                try flushDirtyIndex()
+                do {
+                    try flushDirtyIndex()
+                    try discardStashedHiddenUpperItem(upperBackup)
+                } catch {
+                    if let upperBackup {
+                        try restoreStashedHiddenUpperItem(upperBackup)
+                    } else if !hadUpperItem {
+                        removeCreatedUpperItemAndEmptyParents(current.relativePath, stoppingAt: existingUpperParent)
+                    }
+                    throw error
+                }
+            } else {
+                try discardStashedHiddenUpperItem(upperBackup)
             }
             reply(try attributes(for: try currentItem(for: item)), nil)
         } catch {

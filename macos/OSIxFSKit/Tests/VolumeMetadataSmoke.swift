@@ -303,6 +303,23 @@ struct VolumeMetadataSmoke {
         guard replyAttributes.size == 2, replyAttributes.mode == 0o600 else {
             throw SmokeError("reply attributes do not reflect upper metadata")
         }
+        try? FileManager.default.removeItem(atPath: dirtyFile)
+        try FileManager.default.createDirectory(atPath: dirtyFile, withIntermediateDirectories: false)
+        let flushFailureAttributes = FSItem.SetAttributesRequest()
+        flushFailureAttributes.size = 1
+        flushFailureAttributes.mode = 0o644
+        do {
+            _ = try setAttributes(volume: volume, request: flushFailureAttributes, item: item)
+            throw SmokeError("setAttributes succeeded despite dirty flush failure")
+        } catch let error as NSError where error.domain == NSPOSIXErrorDomain || error.domain == NSCocoaErrorDomain {
+        }
+        try FileManager.default.removeItem(atPath: dirtyFile)
+        let restoredUpperData = try Data(contentsOf: URL(fileURLWithPath: upperFile))
+        let restoredUpperAttributes = try FileManager.default.attributesOfItem(atPath: upperFile)
+        let restoredUpperMode = (restoredUpperAttributes[.posixPermissions] as? NSNumber)?.uint16Value ?? 0
+        guard String(data: restoredUpperData, encoding: .utf8) == "lo", restoredUpperMode == 0o600 else {
+            throw SmokeError("failed setAttributes flush rollback did not restore upper metadata/content")
+        }
         if getuid() != 0 {
             defer {
                 chmod(lowerCopyFailureFile, 0o644)
