@@ -18,20 +18,18 @@ struct OSIxDirtyIndex {
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
     }
 
-    static func rebuild(upper: String, parentTree: [String: OSIxTreeEntry] = [:]) -> OSIxDirtyIndex {
+    static func rebuild(upper: String, parentTree: [String: OSIxTreeEntry] = [:]) throws -> OSIxDirtyIndex {
         var dirtyBytes: Int64 = 0
         var paths: [String: String] = [:]
         let fileManager = FileManager.default
         let upperURL = URL(fileURLWithPath: upper).resolvingSymlinksInPath().standardizedFileURL
 
-        func visit(_ directory: URL, relativeBase: String) {
-            guard let children = try? fileManager.contentsOfDirectory(
+        func visit(_ directory: URL, relativeBase: String) throws {
+            let children = try fileManager.contentsOfDirectory(
                 at: directory,
                 includingPropertiesForKeys: nil,
                 options: []
-            ) else {
-                return
-            }
+            )
 
             let whiteoutedNames = Set(children.compactMap { url -> String? in
                 let name = url.lastPathComponent
@@ -56,7 +54,7 @@ struct OSIxDirtyIndex {
                 if whiteoutedNames.contains(name) {
                     continue
                 }
-                guard let entry = treeEntry(path: path, relativePath: relativePath) else {
+                guard let entry = try treeEntry(path: path, relativePath: relativePath) else {
                     continue
                 }
                 let matchesParent = parentTree[relativePath] == entry
@@ -67,12 +65,12 @@ struct OSIxDirtyIndex {
                     }
                 }
                 if entry.type == "dir" {
-                    visit(url, relativeBase: relativePath)
+                    try visit(url, relativeBase: relativePath)
                 }
             }
         }
 
-        visit(upperURL, relativeBase: "")
+        try visit(upperURL, relativeBase: "")
         return OSIxDirtyIndex(dirtyBytes: dirtyBytes, paths: paths, updatedAt: Date())
     }
 
@@ -91,17 +89,15 @@ struct OSIxDirtyIndex {
         }
     }
 
-    private static func treeEntry(path: String, relativePath: String) -> OSIxTreeEntry? {
+    private static func treeEntry(path: String, relativePath: String) throws -> OSIxTreeEntry? {
         var statBuffer = stat()
         guard lstat(path, &statBuffer) == 0 else {
-            return nil
+            throw posixError(errno)
         }
         let mode = Int64(statBuffer.st_mode & 0o777)
         let fileType = statBuffer.st_mode & S_IFMT
         if fileType == S_IFREG {
-            guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else {
-                return nil
-            }
+            let data = try Data(contentsOf: URL(fileURLWithPath: path))
             return OSIxTreeEntry(path: relativePath, type: "file", mode: mode, size: Int64(statBuffer.st_size), digest: digest(data), linkname: nil)
         }
         if fileType == S_IFDIR {
@@ -111,7 +107,7 @@ struct OSIxDirtyIndex {
             var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
             let count = readlink(path, &buffer, buffer.count - 1)
             guard count >= 0 else {
-                return nil
+                throw posixError(errno)
             }
             let destination = String(cString: Array(buffer[0..<count]) + [0])
             return OSIxTreeEntry(path: relativePath, type: "symlink", mode: mode, size: nil, digest: digest(Data(destination.utf8)), linkname: destination)
@@ -159,4 +155,8 @@ private struct OSIxDescriptor: Decodable {
 
 private struct OSIxAgentConfig: Decodable {
     let tree: [OSIxTreeEntry]
+}
+
+private func posixError(_ code: Int32) -> NSError {
+    NSError(domain: NSPOSIXErrorDomain, code: Int(code))
 }

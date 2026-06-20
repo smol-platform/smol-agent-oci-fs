@@ -186,6 +186,22 @@ struct VolumeMetadataSmoke {
         let upperDanglingRenameDestination = URL(fileURLWithPath: upper).appendingPathComponent(upperDanglingRenameDestinationPath).path
         let removedDirectoryWhiteout = URL(fileURLWithPath: upper).appendingPathComponent("agent/.wh.removed").path
         let dirtyFile = URL(fileURLWithPath: work).deletingLastPathComponent().appendingPathComponent("dirty.json").path
+        if getuid() != 0 {
+            let unreadableDirtyDirectory = URL(fileURLWithPath: upper).appendingPathComponent("agent/dirty-scan-failure").path
+            try FileManager.default.createDirectory(atPath: unreadableDirtyDirectory, withIntermediateDirectories: true)
+            guard chmod(unreadableDirtyDirectory, 0) == 0 else {
+                throw SmokeError("failed to prepare unreadable dirty-index fixture")
+            }
+            defer {
+                chmod(unreadableDirtyDirectory, 0o755)
+                try? FileManager.default.removeItem(atPath: unreadableDirtyDirectory)
+            }
+            do {
+                _ = try OSIxDirtyIndex.rebuild(upper: upper)
+                throw SmokeError("dirty-index rebuild ignored unreadable upper directory")
+            } catch let error as NSError where error.domain == NSPOSIXErrorDomain || error.domain == NSCocoaErrorDomain {
+            }
+        }
         try Data("delete".utf8).write(to: URL(fileURLWithPath: lowerDeleteFile))
         try Data("rename".utf8).write(to: URL(fileURLWithPath: lowerRenameFile))
         try Data("name boundary remove".utf8).write(to: URL(fileURLWithPath: lowerNameBoundaryRemoveFile))

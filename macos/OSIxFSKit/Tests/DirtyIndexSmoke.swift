@@ -13,7 +13,7 @@ struct DirtyIndexSmoke {
         } else {
             parentTree = [:]
         }
-        let index = OSIxDirtyIndex.rebuild(upper: CommandLine.arguments[1], parentTree: parentTree)
+        let index = try OSIxDirtyIndex.rebuild(upper: CommandLine.arguments[1], parentTree: parentTree)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
