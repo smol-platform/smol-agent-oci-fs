@@ -407,6 +407,17 @@ struct VolumeMetadataSmoke {
         guard partialEnumeration.map(\.name) == ["lower.txt", "shared.txt"] else {
             throw SmokeError("enumerateDirectory did not resume from cookie 2")
         }
+        let attributedEnumeration = try enumerateDirectory(volume: volume, directory: workspaceItem(lower: lower, relativePath: enumerateDirectoryPath), includeAttributes: true)
+        guard attributedEnumeration.map(\.name) == ["lower.txt", "shared.txt", "upper.txt"] else {
+            throw SmokeError("attribute enumerateDirectory returned \(attributedEnumeration.map(\.name)), want entries without dot names")
+        }
+        guard attributedEnumeration.allSatisfy(\.hasAttributes),
+              attributedEnumeration.map(\.type) == [.file, .file, .file],
+              attributedEnumeration.first(where: { $0.name == "lower.txt" })?.size == UInt64("lower".utf8.count),
+              attributedEnumeration.first(where: { $0.name == "shared.txt" })?.size == UInt64("upper shared".utf8.count),
+              attributedEnumeration.first(where: { $0.name == "upper.txt" })?.size == UInt64("upper".utf8.count) else {
+            throw SmokeError("attribute enumerateDirectory returned unexpected item metadata")
+        }
         guard try readData(volume: volume, item: item, length: 3, offset: 1) == Data("owe".utf8) else {
             throw SmokeError("read did not return requested lower file slice")
         }
@@ -1629,7 +1640,13 @@ struct VolumeMetadataSmoke {
         return buffer.data(count: replyCount)
     }
 
-    private static func enumerateDirectory(volume: OSIxVolume, directory: FSItem, startCookie: UInt64 = 0, maxEntries: Int? = nil) throws -> [SmokeDirectoryEntry] {
+    private static func enumerateDirectory(
+        volume: OSIxVolume,
+        directory: FSItem,
+        startCookie: UInt64 = 0,
+        maxEntries: Int? = nil,
+        includeAttributes: Bool = false
+    ) throws -> [SmokeDirectoryEntry] {
         let packer = SmokeDirectoryEntryPacker(maxEntries: maxEntries)
         let fsPacker = unsafeBitCast(packer, to: FSDirectoryEntryPacker.self)
         var replyError: (any Error)?
@@ -1637,7 +1654,7 @@ struct VolumeMetadataSmoke {
             directory,
             startingAt: FSDirectoryCookie(rawValue: startCookie),
             verifier: FSDirectoryVerifier(rawValue: 0),
-            attributes: nil,
+            attributes: includeAttributes ? FSItem.GetAttributesRequest() : nil,
             packer: fsPacker
         ) { _, error in
             replyError = error
@@ -1735,6 +1752,7 @@ private struct SmokeDirectoryEntry {
     let type: FSItem.ItemType
     let nextCookie: UInt64
     let hasAttributes: Bool
+    let size: UInt64?
 }
 
 @objc
@@ -1762,7 +1780,8 @@ private final class SmokeDirectoryEntryPacker: NSObject {
             name: name.string ?? "",
             type: itemType,
             nextCookie: nextCookie.rawValue,
-            hasAttributes: attributes != nil
+            hasAttributes: attributes != nil,
+            size: attributes?.size
         ))
         return true
     }
