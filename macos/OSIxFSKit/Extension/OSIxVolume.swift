@@ -174,6 +174,7 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
             let currentDirectory = try currentDirectory(for: directory)
             let relativePath = joinRelative(currentDirectory.relativePath, rawName)
             let target = upperPath(upper, relativePath)
+            let existingUpperParent = nearestExistingUpperParent(for: relativePath)
             guard type == .directory || type == .file else {
                 throw posixError(ENOTSUP)
             }
@@ -202,8 +203,8 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
                 try flushDirtyIndex()
                 reply(item, FSFileName(string: rawName), item == nil ? posixError(ENOENT) : nil)
             } catch {
-                if createdTarget, itemExists(at: target) {
-                    try? fileManager.removeItem(atPath: target)
+                if createdTarget {
+                    removeCreatedUpperItemAndEmptyParents(relativePath, stoppingAt: existingUpperParent)
                 }
                 throw error
             }
@@ -216,6 +217,7 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
         guard let directory = directory as? OSIxItem,
               let rawName = validName(name),
               let destination = contents.string,
+              !destination.isEmpty,
               let upper = mountOptions?.upper else {
             reply(nil, nil, posixError(EINVAL))
             return
@@ -224,6 +226,7 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
             let currentDirectory = try currentDirectory(for: directory)
             let relativePath = joinRelative(currentDirectory.relativePath, rawName)
             let target = upperPath(upper, relativePath)
+            let existingUpperParent = nearestExistingUpperParent(for: relativePath)
             if resolveItem(relativePath) != nil {
                 throw posixError(EEXIST)
             }
@@ -237,9 +240,7 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
                 try flushDirtyIndex()
                 reply(item, FSFileName(string: rawName), item == nil ? posixError(ENOENT) : nil)
             } catch {
-                if itemExists(at: target) {
-                    try? fileManager.removeItem(atPath: target)
-                }
+                removeCreatedUpperItemAndEmptyParents(relativePath, stoppingAt: existingUpperParent)
                 throw error
             }
         } catch {

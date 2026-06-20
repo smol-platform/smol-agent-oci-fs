@@ -44,6 +44,7 @@ struct VolumeMetadataSmoke {
         let renameIntoSelfDirectoryPath = "agent/workspace/rename-into-self"
         let ignoredDirectoryPath = "agent/cache"
         let unsupportedCreateDirectoryPath = "agent/unsupported-create-dir"
+        let emptySymlinkDirectoryPath = "agent/empty-symlink-dir"
         let staleTypeDirectoryPath = "agent/stale-type-dir"
         let removedDirectoryPath = "agent/removed"
         let nonEmptyLowerDirectoryPath = "agent/non-empty-lower"
@@ -84,6 +85,7 @@ struct VolumeMetadataSmoke {
         let lowerIgnoredDirectory = URL(fileURLWithPath: lower).appendingPathComponent(ignoredDirectoryPath).path
         let lowerIgnoredChild = URL(fileURLWithPath: lower).appendingPathComponent(ignoredDirectoryPath + "/child.txt").path
         let lowerUnsupportedCreateDirectory = URL(fileURLWithPath: lower).appendingPathComponent(unsupportedCreateDirectoryPath).path
+        let lowerEmptySymlinkDirectory = URL(fileURLWithPath: lower).appendingPathComponent(emptySymlinkDirectoryPath).path
         let lowerStaleTypeDirectory = URL(fileURLWithPath: lower).appendingPathComponent(staleTypeDirectoryPath).path
         let lowerRemovedDirectory = URL(fileURLWithPath: lower).appendingPathComponent(removedDirectoryPath).path
         let lowerRemovedFile = URL(fileURLWithPath: lower).appendingPathComponent(removedDirectoryPath + "/stale.txt").path
@@ -93,6 +95,7 @@ struct VolumeMetadataSmoke {
         let upperIgnoredDirectory = URL(fileURLWithPath: upper).appendingPathComponent(ignoredDirectoryPath).path
         let upperIgnoredChild = URL(fileURLWithPath: upper).appendingPathComponent(ignoredDirectoryPath + "/child.txt").path
         let upperUnsupportedCreateDirectory = URL(fileURLWithPath: upper).appendingPathComponent(unsupportedCreateDirectoryPath).path
+        let upperEmptySymlinkDirectory = URL(fileURLWithPath: upper).appendingPathComponent(emptySymlinkDirectoryPath).path
         let upperStaleTypeDirectory = URL(fileURLWithPath: upper).appendingPathComponent(staleTypeDirectoryPath).path
         let upperStaleCreate = URL(fileURLWithPath: upper).appendingPathComponent(removedDirectoryPath + "/should-not-exist.txt").path
         let upperNonEmptyDirectory = URL(fileURLWithPath: upper).appendingPathComponent(nonEmptyUpperDirectoryPath).path
@@ -186,6 +189,7 @@ struct VolumeMetadataSmoke {
         try FileManager.default.createDirectory(atPath: lowerIgnoredDirectory, withIntermediateDirectories: true)
         try Data("ignored child".utf8).write(to: URL(fileURLWithPath: lowerIgnoredChild))
         try FileManager.default.createDirectory(atPath: lowerUnsupportedCreateDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: lowerEmptySymlinkDirectory, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(atPath: lowerStaleTypeDirectory, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(atPath: URL(fileURLWithPath: lowerRemovedFile).deletingLastPathComponent().path, withIntermediateDirectories: true)
         try Data("stale".utf8).write(to: URL(fileURLWithPath: lowerRemovedFile))
@@ -290,6 +294,14 @@ struct VolumeMetadataSmoke {
         }
         guard !FileManager.default.fileExists(atPath: upperUnsupportedCreateDirectory) else {
             throw SmokeError("unsupported createItem left upperdir parent state")
+        }
+        do {
+            try createSymbolicLink(volume: volume, name: FSFileName(string: "empty-link"), directory: workspaceItem(lower: lower, relativePath: emptySymlinkDirectoryPath), contents: FSFileName(string: ""), attributes: FSItem.SetAttributesRequest())
+            throw SmokeError("createSymbolicLink accepted empty target")
+        } catch let error as NSError where error.domain == NSPOSIXErrorDomain && error.code == Int(EINVAL) {
+        }
+        guard !FileManager.default.fileExists(atPath: upperEmptySymlinkDirectory) else {
+            throw SmokeError("empty-target createSymbolicLink left upperdir parent state")
         }
         let directoryMode = FSItem.SetAttributesRequest()
         directoryMode.mode = 0o700
@@ -843,6 +855,21 @@ struct VolumeMetadataSmoke {
         }
         guard replyItem != nil else {
             throw SmokeError("createItem returned no item")
+        }
+    }
+
+    static func createSymbolicLink(volume: OSIxVolume, name: FSFileName, directory: FSItem, contents: FSFileName, attributes: FSItem.SetAttributesRequest) throws {
+        var replyItem: FSItem?
+        var replyError: (any Error)?
+        volume.createSymbolicLink(named: name, inDirectory: directory, attributes: attributes, linkContents: contents) { item, _, error in
+            replyItem = item
+            replyError = error
+        }
+        if let replyError {
+            throw replyError
+        }
+        guard replyItem != nil else {
+            throw SmokeError("createSymbolicLink returned no item")
         }
     }
 
