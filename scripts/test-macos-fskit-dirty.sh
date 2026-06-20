@@ -100,6 +100,32 @@ mkdir -p "${tmp}/helper/lower" "${tmp}/helper/upper" "${tmp}/helper/work" "${tmp
 printf "not a directory" > "${tmp}/helper/file-target"
 chmod 0777 "${tmp}/helper/world-upper"
 
+if "${fskitctl}" doctor \
+  --bundle-id \
+  --fstype OSIxFS \
+  2> "${tmp}/doctor-missing-bundle-id.err"; then
+  echo "osix-fskitctl accepted doctor missing --bundle-id value" >&2
+  exit 1
+elif [[ "$?" -ne 64 ]]; then
+  echo "osix-fskitctl doctor missing --bundle-id value returned unexpected status" >&2
+  cat "${tmp}/doctor-missing-bundle-id.err" >&2
+  exit 1
+fi
+grep -q "missing --bundle-id" "${tmp}/doctor-missing-bundle-id.err"
+
+if "${fskitctl}" doctor \
+  --bundle-id io.github.smol-platform.smol-agent-oci-fs.fskit.extension \
+  --fstype \
+  2> "${tmp}/doctor-missing-fstype.err"; then
+  echo "osix-fskitctl accepted doctor missing --fstype value" >&2
+  exit 1
+elif [[ "$?" -ne 64 ]]; then
+  echo "osix-fskitctl doctor missing --fstype value returned unexpected status" >&2
+  cat "${tmp}/doctor-missing-fstype.err" >&2
+  exit 1
+fi
+grep -q "missing --fstype" "${tmp}/doctor-missing-fstype.err"
+
 if "${fskitctl}" mount \
   --source-ref snap \
   --source-digest "${valid_digest}" \

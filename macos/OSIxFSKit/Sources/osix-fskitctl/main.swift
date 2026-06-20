@@ -37,8 +37,9 @@ struct OSIxFSKitControl {
         switch command {
         case "doctor":
             let opts = parseOptions(args)
-            let fsType = opts["fstype"] ?? environment("OSIX_FSKIT_TYPE", defaultFileSystemType)
-            try await requireReady(bundleID: opts["bundle-id"] ?? environment("OSIX_FSKIT_BUNDLE_ID", defaultBundleID), fileSystemType: fsType)
+            let bundleID = try optionOrEnvironment(opts, "bundle-id", envKey: "OSIX_FSKIT_BUNDLE_ID", fallback: defaultBundleID)
+            let fsType = try optionOrEnvironment(opts, "fstype", envKey: "OSIX_FSKIT_TYPE", fallback: defaultFileSystemType)
+            try await requireReady(bundleID: bundleID, fileSystemType: fsType)
         case "mount":
             let opts = parseOptions(args)
             try await mount(opts)
@@ -51,8 +52,8 @@ struct OSIxFSKitControl {
     }
 
     static func mount(_ opts: [String: String]) async throws {
-        let bundleID = opts["bundle-id"] ?? environment("OSIX_FSKIT_BUNDLE_ID", defaultBundleID)
-        let fsType = opts["fstype"] ?? environment("OSIX_FSKIT_TYPE", defaultFileSystemType)
+        let bundleID = try optionOrEnvironment(opts, "bundle-id", envKey: "OSIX_FSKIT_BUNDLE_ID", fallback: defaultBundleID)
+        let fsType = try optionOrEnvironment(opts, "fstype", envKey: "OSIX_FSKIT_TYPE", fallback: defaultFileSystemType)
 
         let target = try required(opts, "target")
         let sourceRef = try required(opts, "source-ref")
@@ -301,6 +302,16 @@ func required(_ opts: [String: String], _ key: String) throws -> String {
         throw usage("missing --\(key)")
     }
     return value
+}
+
+func optionOrEnvironment(_ opts: [String: String], _ key: String, envKey: String, fallback: String) throws -> String {
+    if let value = opts[key] {
+        guard !value.isEmpty else {
+            throw usage("missing --\(key)")
+        }
+        return value
+    }
+    return environment(envKey, fallback)
 }
 
 func usage(_ message: String) -> CLIError {
