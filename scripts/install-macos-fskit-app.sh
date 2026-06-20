@@ -83,6 +83,12 @@ if [[ "${build_helper}" -eq 1 ]]; then
 fi
 "${repo_root}/scripts/build-macos-fskit-app.sh"
 
+host_executable="${target_app}/Contents/MacOS/OSIxFSKitHost"
+if pids="$(/usr/bin/pgrep -f "^${host_executable}$" || true)" && [[ -n "${pids}" ]]; then
+  /bin/kill ${pids} >/dev/null 2>&1 || true
+  sleep 1
+fi
+
 mkdir -p "${install_dir}"
 rm -rf "${target_app}"
 ditto "${source_app}" "${target_app}"

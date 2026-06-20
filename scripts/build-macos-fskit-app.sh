@@ -37,6 +37,7 @@ xcrun swiftc \
   -sdk "${sdk}" \
   -target "${target}" \
   -parse-as-library \
+  -framework AppKit \
   -o "${host_bin}" \
   "${source_root}/App/OSIxFSKitHost.swift"
 

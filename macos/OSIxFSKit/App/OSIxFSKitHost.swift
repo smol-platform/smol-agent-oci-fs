@@ -1,8 +1,12 @@
-import Foundation
+import AppKit
 
 @main
-struct OSIxFSKitHost {
+final class OSIxFSKitHost: NSObject, NSApplicationDelegate {
     static func main() {
-        RunLoop.main.run()
+        let app = NSApplication.shared
+        let delegate = OSIxFSKitHost()
+        app.delegate = delegate
+        app.setActivationPolicy(.accessory)
+        app.run()
     }
 }
