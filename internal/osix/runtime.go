@@ -274,7 +274,10 @@ func validateRuntimePermissions(info MountInfo) error {
 		}
 		st, err := os.Stat(dir)
 		if err != nil {
-			continue
+			return fmt.Errorf("runtime directory %s is unavailable: %w", dir, err)
+		}
+		if !st.IsDir() {
+			return fmt.Errorf("runtime directory %s is not a directory", dir)
 		}
 		if st.Mode().Perm()&0o002 != 0 {
 			return fmt.Errorf("refusing world-writable runtime directory %s", dir)
