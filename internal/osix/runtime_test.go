@@ -691,6 +691,7 @@ func TestSnapshotUsesOverlayUpperdirWhiteouts(t *testing.T) {
 	mustWrite(t, filepath.Join(fs, "agent", "workspace", "file.txt"), "v1\n")
 	mustWrite(t, filepath.Join(fs, "agent", "workspace", "old.txt"), "old\n")
 	mustWrite(t, filepath.Join(fs, "agent", "workspace", "copied.txt"), "same\n")
+	mustWrite(t, filepath.Join(fs, "agent", "workspace", "hidden-dir", "child.txt"), "parent child\n")
 	first, err := Snapshot(root, fs, SnapshotOptions{Tag: "snap-000001"})
 	if err != nil {
 		t.Fatal(err)
@@ -704,6 +705,9 @@ func TestSnapshotUsesOverlayUpperdirWhiteouts(t *testing.T) {
 	mustWrite(t, filepath.Join(upper, "agent", "workspace", "new.txt"), "new\n")
 	mustWrite(t, filepath.Join(upper, "agent", "workspace", "copied.txt"), "same\n")
 	mustWrite(t, filepath.Join(upper, "agent", "workspace", ".wh.old.txt"), "")
+	mustWrite(t, filepath.Join(upper, "agent", "workspace", "old.txt"), "hidden\n")
+	mustWrite(t, filepath.Join(upper, "agent", "workspace", ".wh.hidden-dir"), "")
+	mustWrite(t, filepath.Join(upper, "agent", "workspace", "hidden-dir", "child.txt"), "hidden child\n")
 	mustWrite(t, filepath.Join(upper, ".wh..env"), "")
 	mustWrite(t, filepath.Join(upper, ".osix", ".wh.mount.json"), "")
 	mustWrite(t, filepath.Join(upper, "agent", "tmp", ".wh.scratch.txt"), "")
@@ -734,6 +738,7 @@ func TestSnapshotUsesOverlayUpperdirWhiteouts(t *testing.T) {
 	}
 	wantChanges := []string{
 		"M /agent/workspace/file.txt",
+		"D /agent/workspace/hidden-dir",
 		"A /agent/workspace/new.txt",
 		"D /agent/workspace/old.txt",
 	}
@@ -745,6 +750,7 @@ func TestSnapshotUsesOverlayUpperdirWhiteouts(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertLayerEntries(t, root, second.ManifestDigest, []string{
+		"agent/workspace/.wh.hidden-dir",
 		"agent/workspace/.wh.old.txt",
 		"agent/workspace/file.txt",
 		"agent/workspace/new.txt",

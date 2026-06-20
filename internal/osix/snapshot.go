@@ -821,13 +821,6 @@ func scanOverlayUpper(root string) ([]TreeEntry, []string, int64, error) {
 	if err != nil {
 		return nil, nil, 0, err
 	}
-	var filtered []TreeEntry
-	for _, entry := range entries {
-		if overlayWhiteoutTarget(entry.Path) != "" {
-			continue
-		}
-		filtered = append(filtered, entry)
-	}
 	whiteoutSet := map[string]bool{}
 	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -856,12 +849,29 @@ func scanOverlayUpper(root string) ([]TreeEntry, []string, int64, error) {
 	if err != nil {
 		return nil, nil, 0, err
 	}
+	var filtered []TreeEntry
+	for _, entry := range entries {
+		if overlayWhiteoutTarget(entry.Path) != "" || isCoveredByWhiteout(entry.Path, whiteoutSet) {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
 	whiteouts := make([]string, 0, len(whiteoutSet))
 	for target := range whiteoutSet {
 		whiteouts = append(whiteouts, target)
 	}
 	sort.Strings(whiteouts)
 	return filtered, whiteouts, dirtyBytes, nil
+}
+
+func isCoveredByWhiteout(path string, whiteouts map[string]bool) bool {
+	path = filepath.ToSlash(path)
+	for target := range whiteouts {
+		if path == target || strings.HasPrefix(path, target+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func overlayWhiteoutTarget(path string) string {
