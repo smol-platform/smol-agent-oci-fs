@@ -92,6 +92,9 @@ func (r mountRuntime) Status(ctx context.Context, target string) (MountInfo, err
 		info.State = detectedState
 	}
 	if info.Mode == MountOverlay || info.Mode == MountFUSE {
+		if err := validateRuntimePermissions(info); err != nil {
+			return MountInfo{}, err
+		}
 		if _, err := rebuildDirtyIndex(s, info); err != nil {
 			return MountInfo{}, err
 		}
