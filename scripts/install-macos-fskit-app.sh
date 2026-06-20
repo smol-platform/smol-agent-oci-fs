@@ -174,7 +174,7 @@ if [[ "${register_after_install}" -eq 1 ]]; then
 fi
 
 helper="${repo_root}/.osix-tools/bin/osix-fskitctl"
-if [[ -x "${helper}" ]]; then
+if [[ "${register_after_install}" -eq 1 && -x "${helper}" ]]; then
   ready=0
   if [[ "${wait_ready_seconds}" -gt 0 ]]; then
     deadline=$((SECONDS + wait_ready_seconds))
