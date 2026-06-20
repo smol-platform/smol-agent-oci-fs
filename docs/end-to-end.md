@@ -60,6 +60,15 @@ To run the local Docker Distribution compatibility harness:
 ./scripts/test-registry-docker.sh
 ```
 
+To run the hosted compatibility harness, provide a repository and credentials:
+
+```sh
+export OSIX_HOSTED_REGISTRY_REPO=ghcr.io/OWNER/osix-compat
+export OSIX_REGISTRY_USERNAME=robot
+export OSIX_REGISTRY_PASSWORD='...'
+./scripts/test-registry-hosted.sh
+```
+
 ## Encryption
 
 Age:
