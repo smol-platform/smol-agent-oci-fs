@@ -105,7 +105,7 @@ Install the local host app plus embedded File System extension:
 ```
 
 Local builds are ad-hoc signed by default. To use a real Apple signing identity
-for the host app and embedded extension, set `OSIX_FSKIT_CODESIGN_IDENTITY`
+for the helper, host app, and embedded extension, set `OSIX_FSKIT_CODESIGN_IDENTITY`
 before running the build or install script:
 
 ```sh
@@ -121,6 +121,13 @@ module enabled, finish enablement in System Settings > Login Items & Extensions
 Settings automatically on a failed doctor check; pass `--no-open-settings` to
 keep the install fully noninteractive or `--open-settings` to force System
 Settings after a failed readiness check.
+
+If the switch is enabled but `doctor` still only sees Apple's built-in FSKit
+modules, check signing before debugging mount operations. FSKit associates
+third-party modules with the signing team; ad-hoc signatures report
+`TeamIdentifier=not set`. Install a valid Apple code-signing identity approved
+for `com.apple.developer.fskit.fsmodule`, then rerun the installer with
+`OSIX_FSKIT_CODESIGN_IDENTITY`.
 
 PlugInKit registration and election only make the embedded extension
 discoverable to the system. They are not the same as FSKit runtime enablement.

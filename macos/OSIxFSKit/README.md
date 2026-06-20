@@ -89,7 +89,11 @@ OSIxFSKitHost, and enable the FSKit Modules switch.
 Distribution requires a Developer ID or App Store signing identity and an
 approved FSKit entitlement profile. The same `OSIX_FSKIT_CODESIGN_IDENTITY`
 setting is honored by `install-macos-fskit-app.sh` because it delegates to the
-app build script.
+helper and app build scripts. If `doctor` still reports that FSClient cannot see
+the extension after the System Settings switch is enabled, verify that
+`security find-identity -v -p codesigning` lists a valid Apple signing identity
+and rebuild with `OSIX_FSKIT_CODESIGN_IDENTITY`; ad-hoc signatures have no
+TeamIdentifier for FSKit to associate with the enabled module.
 
 ## Runtime Contract
 

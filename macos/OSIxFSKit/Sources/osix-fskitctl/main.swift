@@ -5,6 +5,7 @@ import FSKit
 let defaultBundleID = "io.github.smol-platform.smol-agent-oci-fs.fskit.extension"
 let defaultFileSystemType = "OSIxFS"
 let fileSystemExtensionSettingsPath = "System Settings > Login Items & Extensions > OSIxFSKitHost Extensions > FSKit Modules"
+let signingIdentityMessage = "FSKit may require the helper, host app, and extension to be signed with an Apple Developer Team identity that carries the FSKit entitlement; ad-hoc signatures have no TeamIdentifier. Set OSIX_FSKIT_CODESIGN_IDENTITY to an Apple Development or Developer ID identity approved for com.apple.developer.fskit.fsmodule, then rebuild and reinstall."
 
 struct CLIError: Error, CustomStringConvertible {
     let message: String
@@ -229,13 +230,14 @@ struct OSIxFSKitControl {
         }
 
         guard let module = modules.first(where: { $0.bundleIdentifier == bundleID }) else {
+            let signingHint = currentExecutableSigningHint()
             if let plugInKitState = try? plugInKitRegistrationState(bundleID: bundleID) {
                 throw CLIError(
-                    message: "FSKit extension \(bundleID) is \(plugInKitState) but FSClient does not report it as enabled. PlugInKit registration is not FSKit runtime enablement; the public FSClient API only reports modules after FSKit enablement. Enable it in \(fileSystemExtensionSettingsPath).",
+                    message: "FSKit extension \(bundleID) is \(plugInKitState) but FSClient does not report it as enabled. PlugInKit registration is not FSKit runtime enablement; the public FSClient API only reports modules after FSKit enablement. Enable it in \(fileSystemExtensionSettingsPath).\(signingHint)",
                     code: 69
                 )
             }
-            throw CLIError(message: "FSKit extension \(bundleID) is not installed or not discoverable", code: 69)
+            throw CLIError(message: "FSKit extension \(bundleID) is not installed or not discoverable.\(signingHint)", code: 69)
         }
         guard module.isEnabled else {
             let plugInKitState = (try? plugInKitRegistrationState(bundleID: bundleID)) ?? "installed"
@@ -298,6 +300,44 @@ struct OSIxFSKitControl {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             return trimmed.hasPrefix("+") && trimmed.contains(bundleID)
         }
+    }
+
+    static func currentExecutableSigningHint() -> String {
+        let executable = currentExecutablePath()
+        guard !executable.isEmpty else {
+            return ""
+        }
+        guard let output = try? runProcessCapturing("/usr/bin/codesign", ["-dv", "--verbose=4", executable]) else {
+            return ""
+        }
+        if output.contains("TeamIdentifier=not set") || output.contains("Signature=adhoc") {
+            return " \(signingIdentityMessage)"
+        }
+        return ""
+    }
+
+    static func currentExecutablePath() -> String {
+        if let path = Bundle.main.executableURL?.path, !path.isEmpty {
+            return path
+        }
+        let executable = CommandLine.arguments.first ?? ""
+        guard !executable.isEmpty else {
+            return ""
+        }
+        if executable.contains("/") {
+            return URL(fileURLWithPath: executable).standardizedFileURL.path
+        }
+        let searchPath = ProcessInfo.processInfo.environment["PATH"] ?? ""
+        for directory in searchPath.split(separator: ":") {
+            let candidate = URL(fileURLWithPath: String(directory))
+                .appendingPathComponent(executable)
+                .standardizedFileURL
+                .path
+            if FileManager.default.isExecutableFile(atPath: candidate) {
+                return candidate
+            }
+        }
+        return executable
     }
 }
 
