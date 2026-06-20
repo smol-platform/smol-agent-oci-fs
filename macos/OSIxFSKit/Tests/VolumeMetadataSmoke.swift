@@ -60,6 +60,11 @@ struct VolumeMetadataSmoke {
         let unsupportedPreallocatePath = "agent/unsupported-preallocate/file.txt"
         let accessReadOnlyPath = "agent/access/readonly.txt"
         let accessSearchDirectoryPath = "agent/access/search-dir"
+        let enumerateDirectoryPath = "agent/enumerate"
+        let enumerateLowerPath = "agent/enumerate/lower.txt"
+        let enumerateHiddenPath = "agent/enumerate/hidden.txt"
+        let enumerateSharedPath = "agent/enumerate/shared.txt"
+        let enumerateUpperPath = "agent/enumerate/upper.txt"
         let emptySymlinkDirectoryPath = "agent/empty-symlink-dir"
         let staleTypeDirectoryPath = "agent/stale-type-dir"
         let removedDirectoryPath = "agent/removed"
@@ -114,6 +119,14 @@ struct VolumeMetadataSmoke {
         let lowerUnsupportedPreallocateFile = URL(fileURLWithPath: lower).appendingPathComponent(unsupportedPreallocatePath).path
         let lowerAccessReadOnlyFile = URL(fileURLWithPath: lower).appendingPathComponent(accessReadOnlyPath).path
         let lowerAccessSearchDirectory = URL(fileURLWithPath: lower).appendingPathComponent(accessSearchDirectoryPath).path
+        let lowerEnumerateDirectory = URL(fileURLWithPath: lower).appendingPathComponent(enumerateDirectoryPath).path
+        let lowerEnumerateLowerFile = URL(fileURLWithPath: lower).appendingPathComponent(enumerateLowerPath).path
+        let lowerEnumerateHiddenFile = URL(fileURLWithPath: lower).appendingPathComponent(enumerateHiddenPath).path
+        let lowerEnumerateSharedFile = URL(fileURLWithPath: lower).appendingPathComponent(enumerateSharedPath).path
+        let upperEnumerateDirectory = URL(fileURLWithPath: upper).appendingPathComponent(enumerateDirectoryPath).path
+        let upperEnumerateSharedFile = URL(fileURLWithPath: upper).appendingPathComponent(enumerateSharedPath).path
+        let upperEnumerateUpperFile = URL(fileURLWithPath: upper).appendingPathComponent(enumerateUpperPath).path
+        let upperEnumerateHiddenWhiteout = URL(fileURLWithPath: upper).appendingPathComponent("agent/enumerate/.wh.hidden.txt").path
         let lowerEmptySymlinkDirectory = URL(fileURLWithPath: lower).appendingPathComponent(emptySymlinkDirectoryPath).path
         let lowerStaleTypeDirectory = URL(fileURLWithPath: lower).appendingPathComponent(staleTypeDirectoryPath).path
         let lowerRemovedDirectory = URL(fileURLWithPath: lower).appendingPathComponent(removedDirectoryPath).path
@@ -286,6 +299,14 @@ struct VolumeMetadataSmoke {
         guard chmod(lowerAccessSearchDirectory, 0o500) == 0 else {
             throw SmokeError("failed to prepare search-only access fixture")
         }
+        try FileManager.default.createDirectory(atPath: lowerEnumerateDirectory, withIntermediateDirectories: true)
+        try Data("lower".utf8).write(to: URL(fileURLWithPath: lowerEnumerateLowerFile))
+        try Data("hidden".utf8).write(to: URL(fileURLWithPath: lowerEnumerateHiddenFile))
+        try Data("lower shared".utf8).write(to: URL(fileURLWithPath: lowerEnumerateSharedFile))
+        try FileManager.default.createDirectory(atPath: upperEnumerateDirectory, withIntermediateDirectories: true)
+        try Data("upper shared".utf8).write(to: URL(fileURLWithPath: upperEnumerateSharedFile))
+        try Data("upper".utf8).write(to: URL(fileURLWithPath: upperEnumerateUpperFile))
+        FileManager.default.createFile(atPath: upperEnumerateHiddenWhiteout, contents: Data())
         try FileManager.default.createDirectory(atPath: lowerEmptySymlinkDirectory, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(atPath: lowerStaleTypeDirectory, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(atPath: URL(fileURLWithPath: lowerRemovedFile).deletingLastPathComponent().path, withIntermediateDirectories: true)
@@ -367,6 +388,25 @@ struct VolumeMetadataSmoke {
         try openItem(volume: volume, item: item, modes: .read)
         try closeItem(volume: volume, item: item, modes: [])
         try deactivateItem(volume: volume, item: item)
+        let enumeratedEntries = try enumerateDirectory(volume: volume, directory: workspaceItem(lower: lower, relativePath: enumerateDirectoryPath))
+        let enumeratedNames = enumeratedEntries.map(\.name)
+        guard enumeratedNames == [".", "..", "lower.txt", "shared.txt", "upper.txt"] else {
+            throw SmokeError("enumerateDirectory returned \(enumeratedNames), want merged lower/upper entries without whiteouts")
+        }
+        guard enumeratedEntries.map(\.type) == [.directory, .directory, .file, .file, .file],
+              enumeratedEntries.map(\.nextCookie) == [1, 2, 3, 4, 5],
+              !enumeratedEntries.contains(where: \.hasAttributes) else {
+            throw SmokeError("enumerateDirectory returned unexpected entry metadata")
+        }
+        guard enumeratedEntries.filter({ $0.name == "shared.txt" }).count == 1,
+              !enumeratedNames.contains("hidden.txt"),
+              !enumeratedNames.contains(".wh.hidden.txt") else {
+            throw SmokeError("enumerateDirectory exposed duplicate, hidden, or whiteout entries")
+        }
+        let partialEnumeration = try enumerateDirectory(volume: volume, directory: workspaceItem(lower: lower, relativePath: enumerateDirectoryPath), startCookie: 2, maxEntries: 2)
+        guard partialEnumeration.map(\.name) == ["lower.txt", "shared.txt"] else {
+            throw SmokeError("enumerateDirectory did not resume from cookie 2")
+        }
         guard try readData(volume: volume, item: item, length: 3, offset: 1) == Data("owe".utf8) else {
             throw SmokeError("read did not return requested lower file slice")
         }
@@ -1589,6 +1629,25 @@ struct VolumeMetadataSmoke {
         return buffer.data(count: replyCount)
     }
 
+    private static func enumerateDirectory(volume: OSIxVolume, directory: FSItem, startCookie: UInt64 = 0, maxEntries: Int? = nil) throws -> [SmokeDirectoryEntry] {
+        let packer = SmokeDirectoryEntryPacker(maxEntries: maxEntries)
+        let fsPacker = unsafeBitCast(packer, to: FSDirectoryEntryPacker.self)
+        var replyError: (any Error)?
+        volume.enumerateDirectory(
+            directory,
+            startingAt: FSDirectoryCookie(rawValue: startCookie),
+            verifier: FSDirectoryVerifier(rawValue: 0),
+            attributes: nil,
+            packer: fsPacker
+        ) { _, error in
+            replyError = error
+        }
+        if let replyError {
+            throw replyError
+        }
+        return packer.entries
+    }
+
     static func synchronize(volume: OSIxVolume) throws {
         var replyError: (any Error)?
         volume.synchronize(flags: FSSyncFlags(rawValue: 0)!) { error in
@@ -1668,6 +1727,44 @@ struct VolumeMetadataSmoke {
             throw replyError
         }
         return (replyNames ?? []).compactMap(\.string)
+    }
+}
+
+private struct SmokeDirectoryEntry {
+    let name: String
+    let type: FSItem.ItemType
+    let nextCookie: UInt64
+    let hasAttributes: Bool
+}
+
+@objc
+private final class SmokeDirectoryEntryPacker: NSObject {
+    private let maxEntries: Int?
+    var entries: [SmokeDirectoryEntry] = []
+
+    init(maxEntries: Int?) {
+        self.maxEntries = maxEntries
+        super.init()
+    }
+
+    @objc(packEntryWithName:itemType:itemID:nextCookie:attributes:)
+    func packEntry(
+        name: FSFileName,
+        itemType: FSItem.ItemType,
+        itemID: FSItem.Identifier,
+        nextCookie: FSDirectoryCookie,
+        attributes: FSItem.Attributes?
+    ) -> Bool {
+        if let maxEntries, entries.count >= maxEntries {
+            return false
+        }
+        entries.append(SmokeDirectoryEntry(
+            name: name.string ?? "",
+            type: itemType,
+            nextCookie: nextCookie.rawValue,
+            hasAttributes: attributes != nil
+        ))
+        return true
     }
 }
 
