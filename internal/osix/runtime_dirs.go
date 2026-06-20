@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 func prepareKernelMountDirs(workspaceRoot, sourceRef, target string, opts MountOptions) (root, lower, upper, work string, rootExisted bool, err error) {
@@ -32,6 +33,9 @@ func prepareKernelMountDirs(workspaceRoot, sourceRef, target string, opts MountO
 		}
 	}()
 	for _, dir := range []string{lower, upper, work} {
+		if err := validateKernelMountPath(root, dir); err != nil {
+			return "", "", "", "", rootExisted, err
+		}
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return "", "", "", "", rootExisted, err
 		}
@@ -62,4 +66,39 @@ func validateKernelMountRoot(root string) error {
 		return fmt.Errorf("runtime root %s is not a directory", root)
 	}
 	return nil
+}
+
+func validateKernelMountPath(root, path string) error {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return err
+	}
+	current := root
+	if rel == "." {
+		return validateKernelMountRoot(root)
+	}
+	for _, part := range splitPath(rel) {
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("runtime path %s contains non-directory component %s", path, current)
+		}
+	}
+	return nil
+}
+
+func splitPath(path string) []string {
+	var parts []string
+	for _, part := range strings.Split(path, string(os.PathSeparator)) {
+		if part != "" {
+			parts = append(parts, part)
+		}
+	}
+	return parts
 }
