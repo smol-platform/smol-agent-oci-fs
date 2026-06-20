@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -156,6 +157,7 @@ func darwinFSKitMount(ctx context.Context, workspaceRoot, sourceRef, target stri
 		"--upper", upper,
 		"--work", work,
 		"--mode", string(mode),
+		"--rw", strconv.FormatBool(opts.RW),
 	}
 	cmd := exec.CommandContext(ctx, helper, args...)
 	out, err := cmd.CombinedOutput()

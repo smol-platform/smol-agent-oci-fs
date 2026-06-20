@@ -15,6 +15,7 @@ struct OSIxMountOptions {
     let upper: String?
     let work: String?
     let mode: String?
+    let rw: String?
     let malformedOptions: [String]
 
     init(
@@ -26,6 +27,7 @@ struct OSIxMountOptions {
         upper: String?,
         work: String?,
         mode: String?,
+        rw: String? = nil,
         malformedOptions: [String] = []
     ) {
         self.bundle = bundle
@@ -36,6 +38,7 @@ struct OSIxMountOptions {
         self.upper = upper
         self.work = work
         self.mode = mode
+        self.rw = rw
         self.malformedOptions = malformedOptions
     }
 
@@ -55,8 +58,13 @@ struct OSIxMountOptions {
             upper: values["upper"],
             work: values["work"],
             mode: values["mode"],
+            rw: values["rw"],
             malformedOptions: parsed.malformedOptions.sorted()
         )
+    }
+
+    var allowsWrites: Bool {
+        rw?.lowercased() != "false"
     }
 
     func validateForMount() throws {
@@ -82,6 +90,10 @@ struct OSIxMountOptions {
             break
         default:
             throw OSIxMountOptionsValidationError(description: "unsupported OSIx FSKit mount mode \(mode ?? "")")
+        }
+
+        if let rw, rw.lowercased() != "true", rw.lowercased() != "false" {
+            throw OSIxMountOptionsValidationError(description: "osix.rw must be true or false")
         }
 
         try validateDirectory(path: workspace!, option: "osix.workspace")

@@ -149,7 +149,7 @@ func TestDarwinFSKitMountPassesAbsoluteTargetToHelper(t *testing.T) {
 	}()
 
 	relativeTarget := "relative-mount"
-	_, err = darwinFSKitMount(context.Background(), root, "snap-000001", relativeTarget, MountOptions{Force: true, Mode: MountOverlay}, MountOverlay)
+	_, err = darwinFSKitMount(context.Background(), root, "snap-000001", relativeTarget, MountOptions{Force: true, RW: true, Mode: MountOverlay}, MountOverlay)
 	if err == nil {
 		t.Fatalf("expected fake helper mount failure")
 	}
@@ -160,6 +160,7 @@ func TestDarwinFSKitMountPassesAbsoluteTargetToHelper(t *testing.T) {
 	args := strings.Split(strings.TrimSpace(string(argsData)), "\n")
 	assertFlagValue(t, args, "--target", absPath(relativeTarget))
 	assertFlagValue(t, args, "--fstype", "ExampleFS")
+	assertFlagValue(t, args, "--rw", "true")
 }
 
 func TestDarwinFSKitUnmountUsesStoredTarget(t *testing.T) {

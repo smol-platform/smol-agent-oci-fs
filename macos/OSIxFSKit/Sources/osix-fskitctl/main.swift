@@ -52,6 +52,7 @@ struct OSIxFSKitControl {
                 "upper",
                 "work",
                 "workspace-root",
+                "rw",
             ])
             try await mount(opts)
         case "unmount":
@@ -74,6 +75,7 @@ struct OSIxFSKitControl {
         let upper = try required(opts, "upper")
         let work = try required(opts, "work")
         let mode = opts["mode"] ?? "overlay"
+        let rw = try readWriteOption(opts)
         try validateMountMode(mode)
         try validateSourceDigest(sourceDigest)
         try validateMountPaths(target: target, workspaceRoot: workspaceRoot, lower: lower, upper: upper, work: work)
@@ -88,10 +90,25 @@ struct OSIxFSKitControl {
             "osix.lower=" + encode(lower),
             "osix.upper=" + encode(upper),
             "osix.work=" + encode(work),
-            "osix.mode=" + encode(mode)
+            "osix.mode=" + encode(mode),
+            "osix.rw=" + encode(rw ? "true" : "false")
         ].joined(separator: ",")
 
         try runProcess("/sbin/mount", ["-F", "-t", fsType, "-o", mountOptions, "osixfs", target])
+    }
+
+    static func readWriteOption(_ opts: [String: String]) throws -> Bool {
+        guard let rawValue = opts["rw"] else {
+            return true
+        }
+        switch rawValue.lowercased() {
+        case "", "true":
+            return true
+        case "false":
+            return false
+        default:
+            throw usage("--rw must be true or false")
+        }
     }
 
     static func validateMountMode(_ mode: String) throws {
@@ -284,7 +301,7 @@ struct OSIxFSKitControl {
 }
 
 func parseOptions(_ args: [String], allowed: Set<String>) throws -> [String: String] {
-    let booleanOptions = Set(["force"])
+    let booleanOptions = Set(["force", "rw"])
     var opts: [String: String] = [:]
     var index = 0
     while index < args.count {
@@ -329,7 +346,7 @@ func optionOrEnvironment(_ opts: [String: String], _ key: String, envKey: String
 }
 
 func usage(_ message: String) -> CLIError {
-    CLIError(message: "\(message)\nusage: osix-fskitctl doctor --bundle-id BUNDLE_ID [--fstype TYPE]\n       osix-fskitctl mount --target PATH --lower PATH --upper PATH --work PATH --source-ref REF --source-digest DIGEST --workspace-root PATH [--mode overlay|fuse] [--fstype TYPE]\n       osix-fskitctl unmount --target PATH [--force]", code: 64)
+    CLIError(message: "\(message)\nusage: osix-fskitctl doctor --bundle-id BUNDLE_ID [--fstype TYPE]\n       osix-fskitctl mount --target PATH --lower PATH --upper PATH --work PATH --source-ref REF --source-digest DIGEST --workspace-root PATH [--mode overlay|fuse] [--rw] [--fstype TYPE]\n       osix-fskitctl unmount --target PATH [--force]", code: 64)
 }
 
 func environment(_ key: String, _ fallback: String) -> String {

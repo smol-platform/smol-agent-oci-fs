@@ -376,6 +376,25 @@ elif [[ "$?" -ne 64 ]]; then
 fi
 grep -q "unsupported --mode materialized" "${tmp}/bad-mode.err"
 
+if "${fskitctl}" mount \
+  --target "${tmp}/target" \
+  --source-ref snap \
+  --source-digest "${valid_digest}" \
+  --workspace-root "${tmp}" \
+  --lower "${tmp}/helper/lower" \
+  --upper "${tmp}/helper/upper" \
+  --work "${tmp}/helper/work" \
+  --rw maybe \
+  2> "${tmp}/bad-rw.err"; then
+  echo "osix-fskitctl accepted malformed --rw" >&2
+  exit 1
+elif [[ "$?" -ne 64 ]]; then
+  echo "osix-fskitctl malformed --rw returned unexpected status" >&2
+  cat "${tmp}/bad-rw.err" >&2
+  exit 1
+fi
+grep -q -- "--rw must be true or false" "${tmp}/bad-rw.err"
+
 if "${fskitctl}" unmount \
   --target "${tmp}/target" \
   --bogus \

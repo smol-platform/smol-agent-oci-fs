@@ -1304,6 +1304,7 @@ struct VolumeMetadataSmoke {
                 "osix.upper=" + encodeMountOption(upper),
                 "osix.work=" + encodeMountOption(work),
                 "osix.mode=" + encodeMountOption("overlay"),
+                "osix.rw=" + encodeMountOption("true"),
             ].joined(separator: ","),
         ])
         guard parsed.bundle == "io.github.smol-platform.smol-agent-oci-fs.fskit.extension",
@@ -1315,6 +1316,9 @@ struct VolumeMetadataSmoke {
               parsed.work == work,
               parsed.mode == "overlay" else {
             throw SmokeError("mount option parser did not decode helper-style -o payload")
+        }
+        guard parsed.allowsWrites else {
+            throw SmokeError("mount option parser did not preserve writable flag")
         }
         try parsed.validateForMount()
 
@@ -1400,6 +1404,18 @@ struct VolumeMetadataSmoke {
             try OSIxMountOptions(bundle: nil, workspace: work, sourceRef: "snap-000001", sourceDigest: "sha256:digest", lower: lower, upper: upper, work: work, mode: "materialized").validateForMount()
             throw SmokeError("mount options accepted unsupported mode")
         } catch is OSIxMountOptionsValidationError {
+        }
+
+        do {
+            try OSIxMountOptions(bundle: nil, workspace: work, sourceRef: "snap-000001", sourceDigest: validDigest, lower: lower, upper: upper, work: work, mode: "overlay", rw: "maybe").validateForMount()
+            throw SmokeError("mount options accepted malformed rw flag")
+        } catch is OSIxMountOptionsValidationError {
+        }
+
+        let readOnly = OSIxMountOptions(bundle: nil, workspace: work, sourceRef: "snap-000001", sourceDigest: validDigest, lower: lower, upper: upper, work: work, mode: "overlay", rw: "false")
+        try readOnly.validateForMount()
+        guard !readOnly.allowsWrites else {
+            throw SmokeError("mount options did not preserve read-only flag")
         }
 
         let workSymlink = URL(fileURLWithPath: work).deletingLastPathComponent().appendingPathComponent("work-link").path
