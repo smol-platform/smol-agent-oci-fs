@@ -355,6 +355,9 @@ func dirtyBytesForTarget(workspaceRoot, target string) (int64, error) {
 	}
 	info, err := s.findMount(target)
 	if err == nil && (info.Mode == MountOverlay || info.Mode == MountFUSE) && info.UpperDir != "" {
+		if err := validateRuntimePermissions(info); err != nil {
+			return 0, err
+		}
 		return rebuildDirtyIndex(s, info)
 	}
 	_, dirtyBytes, err := scanTree(target)

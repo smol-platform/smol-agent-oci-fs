@@ -952,3 +952,69 @@ func TestWatchUsesRuntimeUpperDirtyBytes(t *testing.T) {
 		t.Fatalf("dirty index included copied-up unchanged file: %s", dirty)
 	}
 }
+
+func TestWatchRejectsUnsafeRuntimeDirsBeforeDirtyIndex(t *testing.T) {
+	root := t.TempDir()
+	if _, err := Init(root, InitOptions{
+		Base:          "example/base:latest",
+		Name:          "agent",
+		StateRef:      "local/agent",
+		Mount:         filepath.Join(root, "fs"),
+		DefaultBranch: "main",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fs := filepath.Join(root, "fs")
+	mustWrite(t, filepath.Join(fs, "agent", "workspace", "file.txt"), "v1\n")
+	first, err := Snapshot(root, fs, SnapshotOptions{Tag: "snap-000001"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	target := filepath.Join(root, "merged")
+	upper := filepath.Join(root, "upper")
+	work := filepath.Join(root, "work")
+	mustWrite(t, filepath.Join(upper, "agent", "workspace", "file.txt"), "v2\n")
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(work, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(upper, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	s, err := findStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := MountInfo{
+		Target:       absPath(target),
+		SourceRef:    "snap-000001",
+		SourceDigest: first.ManifestDigest,
+		Mode:         MountFUSE,
+		RW:           true,
+		UpperDir:     upper,
+		WorkDir:      work,
+		State:        "mounted",
+	}
+	if err := s.writeMount(info); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := Watch(root, target, WatchOptions{Iterations: 1, MaxDirtyBytes: 1024})
+	if err == nil || !strings.Contains(err.Error(), "world-writable runtime directory") {
+		t.Fatalf("expected watch runtime permission error, got result=%#v err=%v", result, err)
+	}
+	dirtyPath := filepath.Join(filepath.Dir(info.WorkDir), "dirty.json")
+	if _, err := os.Stat(dirtyPath); !os.IsNotExist(err) {
+		t.Fatalf("dirty index should not be written for unsafe runtime dirs, stat err=%v", err)
+	}
+	stateData, err := os.ReadFile(result.StatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(stateData), "world-writable runtime directory") {
+		t.Fatalf("watch state missing runtime permission error: %s", stateData)
+	}
+}
