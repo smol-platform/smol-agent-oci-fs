@@ -186,7 +186,7 @@ func TestPrepareKernelMountDirsRollsBackFailedLowerRestore(t *testing.T) {
 	}
 	mountRoot := filepath.Join(s.mountsRoot(), mountID)
 
-	_, _, _, _, err = prepareKernelMountDirs(root, "missing-snapshot", target, MountOptions{})
+	_, _, _, _, _, err = prepareKernelMountDirs(root, "missing-snapshot", target, MountOptions{})
 	if err == nil || !strings.Contains(err.Error(), "prepare lowerdir") {
 		t.Fatalf("expected lowerdir restore failure, got %v", err)
 	}
@@ -219,12 +219,68 @@ func TestPrepareKernelMountDirsPreservesPreexistingRootOnFailure(t *testing.T) {
 	sentinel := filepath.Join(mountRoot, "upper", "sentinel.txt")
 	mustWrite(t, sentinel, "keep\n")
 
-	_, _, _, _, err = prepareKernelMountDirs(root, "missing-snapshot", target, MountOptions{})
+	_, _, _, _, _, err = prepareKernelMountDirs(root, "missing-snapshot", target, MountOptions{})
 	if err == nil || !strings.Contains(err.Error(), "prepare lowerdir") {
 		t.Fatalf("expected lowerdir restore failure, got %v", err)
 	}
 	if data, readErr := os.ReadFile(sentinel); readErr != nil || string(data) != "keep\n" {
 		t.Fatalf("failed mount prep should preserve preexisting runtime root, data=%q err=%v", data, readErr)
+	}
+}
+
+func TestCleanupFreshKernelMountDirsPreservesPreexistingRoot(t *testing.T) {
+	root := t.TempDir()
+	if _, err := Init(root, InitOptions{
+		Base:          "example/base:latest",
+		Name:          "agent",
+		StateRef:      "local/agent",
+		Mount:         filepath.Join(root, "fs"),
+		DefaultBranch: "main",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fs := filepath.Join(root, "fs")
+	mustWrite(t, filepath.Join(fs, "agent", "workspace", "file.txt"), "v1\n")
+	if _, err := Snapshot(root, fs, SnapshotOptions{Tag: "snap-000001"}); err != nil {
+		t.Fatal(err)
+	}
+
+	freshTarget := filepath.Join(root, "fresh")
+	freshRoot, _, _, _, freshExisted, err := prepareKernelMountDirs(root, "snap-000001", freshTarget, MountOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if freshExisted {
+		t.Fatalf("fresh runtime root should report rootExisted=false")
+	}
+	cleanupFreshKernelMountDirs(freshRoot, freshExisted)
+	if _, err := os.Stat(freshRoot); !os.IsNotExist(err) {
+		t.Fatalf("fresh runtime root should be removed after startup failure cleanup, stat err=%v", err)
+	}
+
+	existingTarget := filepath.Join(root, "existing")
+	s, err := findStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mountID, err := mountKey(existingTarget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	existingRoot := filepath.Join(s.mountsRoot(), mountID)
+	sentinel := filepath.Join(existingRoot, "upper", "sentinel.txt")
+	mustWrite(t, sentinel, "keep\n")
+
+	preparedRoot, _, _, _, existingExisted, err := prepareKernelMountDirs(root, "snap-000001", existingTarget, MountOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preparedRoot != existingRoot || !existingExisted {
+		t.Fatalf("existing runtime root detection mismatch: root=%q existed=%v", preparedRoot, existingExisted)
+	}
+	cleanupFreshKernelMountDirs(preparedRoot, existingExisted)
+	if data, err := os.ReadFile(sentinel); err != nil || string(data) != "keep\n" {
+		t.Fatalf("preexisting runtime root should be preserved, data=%q err=%v", data, err)
 	}
 }
 

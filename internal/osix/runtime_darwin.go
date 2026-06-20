@@ -108,15 +108,17 @@ func darwinFSKitMount(ctx context.Context, workspaceRoot, sourceRef, target stri
 	if err != nil {
 		return MountInfo{}, err
 	}
-	root, lower, upper, work, err := prepareKernelMountDirs(workspaceRoot, sourceRef, target, opts)
+	root, lower, upper, work, rootExisted, err := prepareKernelMountDirs(workspaceRoot, sourceRef, target, opts)
 	if err != nil {
 		return MountInfo{}, err
 	}
 	if err := os.MkdirAll(target, 0o755); err != nil {
+		cleanupFreshKernelMountDirs(root, rootExisted)
 		return MountInfo{}, err
 	}
 	helper, err := darwinFSKitHelper()
 	if err != nil {
+		cleanupFreshKernelMountDirs(root, rootExisted)
 		return MountInfo{}, err
 	}
 	args := []string{
@@ -134,6 +136,7 @@ func darwinFSKitMount(ctx context.Context, workspaceRoot, sourceRef, target stri
 	cmd := exec.CommandContext(ctx, helper, args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		cleanupFreshKernelMountDirs(root, rootExisted)
 		return MountInfo{}, fmt.Errorf("mount macOS FSKit filesystem: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 	now := time.Now().UTC().Truncate(time.Second)

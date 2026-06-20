@@ -47,15 +47,17 @@ func overlayMount(ctx context.Context, workspaceRoot, sourceRef, target string, 
 	if err != nil {
 		return MountInfo{}, err
 	}
-	root, lower, upper, work, err := prepareKernelMountDirs(workspaceRoot, sourceRef, target, opts)
+	root, lower, upper, work, rootExisted, err := prepareKernelMountDirs(workspaceRoot, sourceRef, target, opts)
 	if err != nil {
 		return MountInfo{}, err
 	}
 	if err := os.MkdirAll(target, 0o755); err != nil {
+		cleanupFreshKernelMountDirs(root, rootExisted)
 		return MountInfo{}, err
 	}
 	options := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", lower, upper, work)
 	if err := unix.Mount("overlay", target, "overlay", 0, options); err != nil {
+		cleanupFreshKernelMountDirs(root, rootExisted)
 		return MountInfo{}, fmt.Errorf("overlay mount: %w", err)
 	}
 	info := MountInfo{
@@ -98,15 +100,17 @@ func fuseMount(ctx context.Context, workspaceRoot, sourceRef, target string, opt
 	if err != nil {
 		return MountInfo{}, err
 	}
-	root, lower, upper, work, err := prepareKernelMountDirs(workspaceRoot, sourceRef, target, opts)
+	root, lower, upper, work, rootExisted, err := prepareKernelMountDirs(workspaceRoot, sourceRef, target, opts)
 	if err != nil {
 		return MountInfo{}, err
 	}
 	if err := os.MkdirAll(target, 0o755); err != nil {
+		cleanupFreshKernelMountDirs(root, rootExisted)
 		return MountInfo{}, err
 	}
 	cmd := exec.CommandContext(ctx, "fuse-overlayfs", "-o", fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", lower, upper, work), target)
 	if err := cmd.Start(); err != nil {
+		cleanupFreshKernelMountDirs(root, rootExisted)
 		return MountInfo{}, fmt.Errorf("start fuse-overlayfs: %w", err)
 	}
 	pid := cmd.Process.Pid
