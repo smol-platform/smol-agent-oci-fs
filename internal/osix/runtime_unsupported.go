@@ -11,6 +11,10 @@ func overlayAvailable() error {
 	return fmt.Errorf("overlayfs runtime is only available on Linux")
 }
 
+func overlayAvailableAt(root string) error {
+	return overlayAvailable()
+}
+
 func fuseAvailable() error {
 	return fmt.Errorf("fuse-overlayfs runtime is not available on this platform in the current build")
 }

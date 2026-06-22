@@ -16,6 +16,10 @@ import (
 )
 
 func overlayAvailable() error {
+	return overlayAvailableAt(os.TempDir())
+}
+
+func overlayAvailableAt(root string) error {
 	if os.Geteuid() != 0 {
 		return fmt.Errorf("overlayfs requires root or mount namespace privileges")
 	}
@@ -24,6 +28,30 @@ func overlayAvailable() error {
 		if !strings.Contains(string(data), "overlay") {
 			return fmt.Errorf("kernel overlayfs support not listed in /proc/filesystems")
 		}
+	}
+	probeRoot, err := os.MkdirTemp(root, ".osix-overlay-probe-*")
+	if err != nil {
+		return fmt.Errorf("create overlayfs probe under %s: %w", root, err)
+	}
+	defer os.RemoveAll(probeRoot)
+	lower := filepath.Join(probeRoot, "lower")
+	upper := filepath.Join(probeRoot, "upper")
+	work := filepath.Join(probeRoot, "work")
+	merged := filepath.Join(probeRoot, "merged")
+	for _, dir := range []string{lower, upper, work, merged} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("create overlayfs probe dir: %w", err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(lower, "probe"), []byte("ok\n"), 0o644); err != nil {
+		return fmt.Errorf("write overlayfs probe lower file: %w", err)
+	}
+	options := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", lower, upper, work)
+	if err := unix.Mount("overlay", merged, "overlay", 0, options); err != nil {
+		return fmt.Errorf("kernel overlayfs mount probe failed under %s: %w", root, err)
+	}
+	if err := unix.Unmount(merged, 0); err != nil {
+		return fmt.Errorf("unmount overlayfs probe: %w", err)
 	}
 	return nil
 }

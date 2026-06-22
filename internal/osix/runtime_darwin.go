@@ -21,6 +21,10 @@ func overlayAvailable() error {
 	return darwinFSKitAvailable()
 }
 
+func overlayAvailableAt(root string) error {
+	return overlayAvailable()
+}
+
 func fuseAvailable() error {
 	return darwinFSKitAvailable()
 }

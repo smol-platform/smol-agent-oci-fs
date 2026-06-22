@@ -40,7 +40,7 @@ func (r mountRuntime) Mount(ctx context.Context, sourceRef string, target string
 	if requested == MountAuto && r.requestedMode != MountAuto {
 		requested = r.requestedMode
 	}
-	mode, err := selectMountMode(requested, opts)
+	mode, err := selectMountMode(r.workspaceRoot, requested, opts)
 	if err != nil {
 		return MountInfo{}, err
 	}
@@ -169,12 +169,12 @@ func normalizeMountMode(mode MountMode) MountMode {
 	return mode
 }
 
-func selectMountMode(mode MountMode, opts MountOptions) (MountMode, error) {
+func selectMountMode(workspaceRoot string, mode MountMode, opts MountOptions) (MountMode, error) {
 	switch mode {
 	case MountMaterialized:
 		return MountMaterialized, nil
 	case MountOverlay:
-		if err := overlayAvailable(); err != nil {
+		if err := overlayAvailableAt(workspaceRoot); err != nil {
 			return "", err
 		}
 		return MountOverlay, nil
@@ -184,7 +184,7 @@ func selectMountMode(mode MountMode, opts MountOptions) (MountMode, error) {
 		}
 		return MountFUSE, nil
 	case MountAuto:
-		if err := overlayAvailable(); err == nil {
+		if err := overlayAvailableAt(workspaceRoot); err == nil {
 			return MountOverlay, nil
 		}
 		if err := fuseAvailable(); err == nil {
