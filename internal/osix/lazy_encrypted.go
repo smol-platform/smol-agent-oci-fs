@@ -463,11 +463,11 @@ func ensureEncryptedLazyIndexRecord(s store, subjectDigest, decrypt string) erro
 	if source, err := s.readRemoteBlobSource(indexDigest); err == nil {
 		for _, entry := range record.Files {
 			if entry.Digest != "" {
-				_ = s.writeRemoteBlobSource(remoteBlobSource{Registry: source.Registry, Repo: source.Repo, Digest: entry.Digest})
+				_ = s.writeRemoteBlobSource(remoteBlobSource{Scheme: source.Scheme, Registry: source.Registry, Repo: source.Repo, Digest: entry.Digest})
 			}
 			for _, chunk := range entry.Chunks {
 				if chunk.Digest != "" {
-					_ = s.writeRemoteBlobSource(remoteBlobSource{Registry: source.Registry, Repo: source.Repo, Digest: chunk.Digest})
+					_ = s.writeRemoteBlobSource(remoteBlobSource{Scheme: source.Scheme, Registry: source.Registry, Repo: source.Repo, Digest: chunk.Digest})
 				}
 			}
 		}

@@ -230,6 +230,14 @@ type Change struct {
 	Path string
 }
 
+type TargetChangeSummary struct {
+	Reference        string
+	MissingReference bool
+	Changed          bool
+	ChangeCount      int
+	DirtyBytes       int64
+}
+
 type Ref struct {
 	Name   string
 	Digest string
@@ -263,6 +271,8 @@ type WatchOptions struct {
 	OnTurnBoundary bool
 	Push           bool
 	Encrypt        string
+	Sign           string
+	Attest         string
 	Retention      WatchRetentionPolicy
 	Once           bool
 	Iterations     int

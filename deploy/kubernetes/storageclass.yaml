@@ -2,7 +2,7 @@ apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
   name: osix-agent-state
-provisioner: agent.smol.ai/osix
+provisioner: osix.agent.smol.ai
 volumeBindingMode: WaitForFirstConsumer
 parameters:
   mountMode: auto

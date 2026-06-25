@@ -69,7 +69,7 @@ func Watch(workspaceRoot, target string, opts WatchOptions) (WatchResult, error)
 				return result, err
 			}
 			tag := fmt.Sprintf("%s-%06d", opts.TagPrefix, time.Now().UTC().Unix())
-			snap, err := Snapshot(workspaceRoot, target, SnapshotOptions{Tag: tag, AlsoTag: branchTag, Encrypt: opts.Encrypt, SecretScan: "warn"})
+			snap, err := Snapshot(workspaceRoot, target, SnapshotOptions{Tag: tag, AlsoTag: branchTag, Encrypt: opts.Encrypt, Sign: opts.Sign, Attest: opts.Attest, SecretScan: "warn"})
 			if err != nil {
 				state.LastError = err.Error()
 				_ = writeWatchState(statePath, state)

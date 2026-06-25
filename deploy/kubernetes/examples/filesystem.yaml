@@ -7,6 +7,13 @@ spec:
   stateRef: registry.example.com/acme/demo-agent-state
   branch: main
   mountMode: auto
+  registrySecretRef:
+    name: osix-registry-auth
+  signing:
+    signer: keyless
+    attestation: slsa
+    certificateIdentity: https://github.com/smol-platform/smol-agent-oci-fs/.github/workflows/release.yml@refs/heads/main
+    certificateOIDCIssuer: https://token.actions.githubusercontent.com
   snapshotPolicyRef:
     name: frequent-checkpoint
   runtimeClassRef:

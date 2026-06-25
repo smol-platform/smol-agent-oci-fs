@@ -93,11 +93,81 @@ func TestValidateFileSystemAndRenderInstall(t *testing.T) {
 		"kind: CustomResourceDefinition",
 		"AgentOCIFileSystem",
 		"AgentOCISnapshotPolicy",
+		"kind: CSIDriver",
 		"kind: DaemonSet",
+		"serve-csi",
+		"csi-node-driver-registrar",
 		"kind: StorageClass",
 	} {
 		if !strings.Contains(manifest, want) {
 			t.Fatalf("install manifest missing %q", want)
+		}
+	}
+}
+
+func TestCSIVolumeContextIncludesFilesystemAndPolicy(t *testing.T) {
+	fs := NormalizeFileSystem(AgentOCIFileSystem{
+		ObjectMeta: ObjectMeta{Name: "agent-context", Namespace: "agents", UID: "uid-1"},
+		Spec: AgentOCIFileSystemSpec{
+			BaseImage:         "example/base:latest",
+			StateRef:          "registry.example/agents/context",
+			SourceRef:         "registry.example/agents/context:main",
+			MountMode:         "materialized",
+			RegistrySecretRef: &LocalObjectReference{Name: "registry-auth"},
+			Encryption:        &EncryptionSpec{Recipients: "age1example"},
+			Signing:           &SigningSpec{Signer: "cosign-key", Attestation: "slsa"},
+		},
+	})
+	context, err := CSIVolumeContext(fs, &AgentOCISnapshotPolicySpec{
+		Every:               "5s",
+		MaxDirtyBytes:       "1MiB",
+		OnTurnBoundary:      true,
+		Push:                false,
+		CompactEvery:        2,
+		SquashEvery:         4,
+		CheckpointTagPrefix: "checkpoint",
+		PreserveSigned:      true,
+		PruneLocal:          true,
+		PruneRemote:         true,
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]string{
+		"name":                                "agent-context",
+		"namespace":                           "agents",
+		"stateRef":                            "registry.example/agents/context",
+		"sourceRef":                           "registry.example/agents/context:main",
+		"mountMode":                           "materialized",
+		"registrySecretRef":                   "registry-auth",
+		"encryptionRecipients":                "age1example",
+		"signer":                              "cosign-key",
+		"attestation":                         "slsa",
+		"autoSnapshot":                        "true",
+		"snapshotEvery":                       "5s",
+		"maxDirtyBytes":                       "1MiB",
+		"pushDisabled":                        "true",
+		"compactEvery":                        "2",
+		"squashEvery":                         "4",
+		"checkpointTagPrefix":                 "checkpoint",
+		"agent.smol.ai/registry-secret":       "registry-auth",
+		"agent.smol.ai/auto-snapshot":         "true",
+		"agent.smol.ai/checkpoint-tag-prefix": "checkpoint",
+		"agent.smol.ai/encryption-recipients": "age1example",
+		"agent.smol.ai/signer":                "cosign-key",
+		"agent.smol.ai/attestation":           "slsa",
+		"agent.smol.ai/push-disabled":         "true",
+		"agent.smol.ai/on-turn-boundary":      "true",
+		"agent.smol.ai/preserve-signed":       "true",
+		"agent.smol.ai/prune-local":           "true",
+		"agent.smol.ai/prune-remote":          "true",
+		"agent.smol.ai/max-dirty-bytes":       "1MiB",
+		"agent.smol.ai/snapshot-every":        "5s",
+		"agent.smol.ai/compact-every":         "2",
+		"agent.smol.ai/squash-every":          "4",
+	} {
+		if got := context[key]; got != want {
+			t.Fatalf("context[%q] = %q, want %q in %#v", key, got, want, context)
 		}
 	}
 }

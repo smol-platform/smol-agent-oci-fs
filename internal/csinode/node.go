@@ -12,14 +12,16 @@ import (
 )
 
 type Node struct {
-	WorkspaceRoot string
+	WorkspaceRoot  string
+	SecretProvider SecretProvider
 }
 
 type PublishRequest struct {
-	FileSystem k8soperator.AgentOCIFileSystem
-	Policy     *k8soperator.AgentOCISnapshotPolicySpec
-	VolumeID   string
-	TargetPath string
+	FileSystem   k8soperator.AgentOCIFileSystem
+	Policy       *k8soperator.AgentOCISnapshotPolicySpec
+	VolumeID     string
+	TargetPath   string
+	AutoSnapshot bool
 }
 
 type PublishResult struct {
@@ -42,7 +44,15 @@ type SnapshotResult struct {
 	CheckpointDigests []string `json:"checkpointDigests,omitempty"`
 }
 
+type SnapshotDecision struct {
+	Needed           bool  `json:"needed"`
+	MissingReference bool  `json:"missingReference,omitempty"`
+	DirtyBytes       int64 `json:"dirtyBytes"`
+	ChangeCount      int   `json:"changeCount"`
+}
+
 func (n Node) Publish(ctx context.Context, req PublishRequest) (PublishResult, error) {
+	nodeMetrics.publishTotal.Add(1)
 	fs := k8soperator.NormalizeFileSystem(req.FileSystem)
 	if err := k8soperator.ValidateFileSystem(fs); err != nil {
 		return PublishResult{}, err
@@ -76,8 +86,16 @@ func (n Node) Publish(ctx context.Context, req PublishRequest) (PublishResult, e
 		sourceRef = fs.Spec.Branch
 	}
 	if k8soperatorRefIsRemote(sourceRef) {
-		digest, err := osix.PullSnapshot(workspace, sourceRef, "csi-source")
+		var digest string
+		err := n.withRegistryCredentials(ctx, fs, func() error {
+			var pullErr error
+			digest, pullErr = osix.PullSnapshot(workspace, sourceRef, "csi-source")
+			return pullErr
+		})
 		if err != nil {
+			return PublishResult{}, err
+		}
+		if err := n.verifySource(ctx, fs, workspace, digest); err != nil {
 			return PublishResult{}, err
 		}
 		sourceRef = digest
@@ -92,6 +110,20 @@ func (n Node) Publish(ctx context.Context, req PublishRequest) (PublishResult, e
 			return PublishResult{}, err
 		}
 	} else if err := os.MkdirAll(filepath.Join(req.TargetPath, "agent", "workspace"), 0o755); err != nil {
+		return PublishResult{}, err
+	}
+	volumeID := req.VolumeID
+	if volumeID == "" {
+		volumeID = fs.ObjectMeta.Name
+	}
+	if err := n.writeMountRecord(MountRecord{
+		VolumeID:      volumeID,
+		TargetPath:    req.TargetPath,
+		WorkspacePath: workspace,
+		FileSystem:    fs,
+		Policy:        req.Policy,
+		AutoSnapshot:  req.AutoSnapshot,
+	}); err != nil {
 		return PublishResult{}, err
 	}
 	return PublishResult{Workspace: workspace, Target: req.TargetPath, SourceRef: sourceRef, Mode: fs.Spec.MountMode}, nil
@@ -112,38 +144,79 @@ func (n Node) Snapshot(ctx context.Context, req SnapshotRequest) (SnapshotResult
 	if err != nil {
 		return SnapshotResult{}, err
 	}
-	watch, err := osix.Watch(workspace, req.TargetPath, osix.WatchOptions{
-		Every:          every,
-		MaxDirtyBytes:  maxDirtyBytes,
-		OnTurnBoundary: policy.OnTurnBoundary,
-		Push:           policy.Push,
-		Once:           true,
-		Retention: osix.WatchRetentionPolicy{
-			CompactEvery:        policy.CompactEvery,
-			SquashEvery:         policy.SquashEvery,
-			CheckpointTagPrefix: policy.CheckpointTagPrefix,
-			KeepSnapshots:       policy.KeepSnapshots,
-			PreserveSigned:      policy.PreserveSigned,
-			PruneLocal:          policy.PruneLocal,
-			PruneRemote:         policy.PruneRemote,
-		},
+	var watch osix.WatchResult
+	err = n.withRegistryCredentials(ctx, fs, func() error {
+		var watchErr error
+		watch, watchErr = osix.Watch(workspace, req.TargetPath, osix.WatchOptions{
+			Every:          every,
+			MaxDirtyBytes:  maxDirtyBytes,
+			OnTurnBoundary: policy.OnTurnBoundary,
+			Push:           policy.Push,
+			Encrypt:        encryptionRecipients(fs),
+			Sign:           signingSigner(fs),
+			Attest:         signingAttestation(fs),
+			Once:           true,
+			Retention: osix.WatchRetentionPolicy{
+				CompactEvery:        policy.CompactEvery,
+				SquashEvery:         policy.SquashEvery,
+				CheckpointTagPrefix: policy.CheckpointTagPrefix,
+				KeepSnapshots:       policy.KeepSnapshots,
+				PreserveSigned:      policy.PreserveSigned,
+				PruneLocal:          policy.PruneLocal,
+				PruneRemote:         policy.PruneRemote,
+			},
+		})
+		return watchErr
 	})
 	if err != nil {
+		nodeMetrics.snapshotErrorsTotal.Add(1)
 		return SnapshotResult{}, err
 	}
 	result := SnapshotResult{StatePath: watch.StatePath}
 	for _, snap := range watch.Snapshots {
 		result.SnapshotDigests = append(result.SnapshotDigests, snap.ManifestDigest)
 	}
+	nodeMetrics.snapshotTotal.Add(uint64(len(result.SnapshotDigests)))
 	for _, plan := range watch.Compactions {
 		if plan.CheckpointDigest != "" {
 			result.CheckpointDigests = append(result.CheckpointDigests, plan.CheckpointDigest)
 		}
 	}
+	nodeMetrics.checkpointTotal.Add(uint64(len(result.CheckpointDigests)))
 	return result, nil
 }
 
+func (n Node) SnapshotNeeded(req SnapshotRequest) (SnapshotDecision, error) {
+	fs := k8soperator.NormalizeFileSystem(req.FileSystem)
+	workspace := n.workspaceFor(req.VolumeID, fs)
+	summary, err := osix.TargetChanges(workspace, req.TargetPath, fs.Spec.Branch)
+	if err != nil {
+		return SnapshotDecision{}, err
+	}
+	decision := SnapshotDecision{
+		Needed:           summary.Changed,
+		MissingReference: summary.MissingReference,
+		DirtyBytes:       summary.DirtyBytes,
+		ChangeCount:      summary.ChangeCount,
+	}
+	if !decision.Needed || summary.MissingReference {
+		return decision, nil
+	}
+	if req.Policy == nil {
+		return decision, nil
+	}
+	maxDirtyBytes, err := parseByteSize(req.Policy.MaxDirtyBytes)
+	if err != nil {
+		return SnapshotDecision{}, err
+	}
+	if maxDirtyBytes > 0 && summary.DirtyBytes > 0 && summary.DirtyBytes < maxDirtyBytes {
+		decision.Needed = false
+	}
+	return decision, nil
+}
+
 func (n Node) Unpublish(ctx context.Context, req PublishRequest, finalSnapshot bool) error {
+	nodeMetrics.unpublishTotal.Add(1)
 	if finalSnapshot {
 		if _, err := n.Snapshot(ctx, SnapshotRequest{
 			FileSystem: req.FileSystem,
@@ -158,7 +231,75 @@ func (n Node) Unpublish(ctx context.Context, req PublishRequest, finalSnapshot b
 	if err := osix.NewMountRuntime(workspace, osix.MountAuto).Unmount(ctx, req.TargetPath, osix.UnmountOptions{Force: true}); err != nil && !strings.Contains(err.Error(), "no such file") {
 		return err
 	}
+	volumeID := req.VolumeID
+	if volumeID == "" {
+		volumeID = req.FileSystem.ObjectMeta.Name
+	}
+	return n.removeMountRecord(volumeID)
+}
+
+func (n Node) verifySource(ctx context.Context, fs k8soperator.AgentOCIFileSystem, workspace, ref string) error {
+	signing := fs.Spec.Signing
+	if signing == nil {
+		return nil
+	}
+	opts, cleanup, err := n.verifyOptions(ctx, fs)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	if _, err := osix.VerifySnapshot(workspace, ref, opts); err != nil {
+		return fmt.Errorf("verify sourceRef before restore handoff: %w", err)
+	}
 	return nil
+}
+
+func (n Node) verifyOptions(ctx context.Context, fs k8soperator.AgentOCIFileSystem) (osix.VerifyOptions, func(), error) {
+	signing := fs.Spec.Signing
+	if signing == nil {
+		return osix.VerifyOptions{}, func() {}, nil
+	}
+	opts := osix.VerifyOptions{
+		CertificateIdentity:          signing.CertificateIdentity,
+		CertificateIdentityRegexp:    signing.CertificateIdentityRegexp,
+		CertificateOIDCIssuer:        signing.CertificateOIDCIssuer,
+		CertificateOIDCIssuerRegexp:  signing.CertificateOIDCIssuerRegexp,
+		SigstoreTrustedRoot:          signing.SigstoreTrustedRoot,
+		SigstoreIgnoreTlog:           signing.SigstoreIgnoreTlog,
+		SigstoreIgnoreTimestamp:      signing.SigstoreIgnoreTimestamp,
+		SigstoreIgnoreCertificateSCT: signing.SigstoreIgnoreCertificateSCT,
+	}
+	cleanup := func() {}
+	if signing.TrustedKeySecretRef != nil && signing.TrustedKeySecretRef.Name != "" {
+		provider, ok := n.secretProvider()
+		if !ok {
+			return osix.VerifyOptions{}, cleanup, fmt.Errorf("trustedKeySecretRef %q requires an in-cluster Kubernetes secret provider", signing.TrustedKeySecretRef.Name)
+		}
+		data, err := provider.SecretData(ctx, namespaceOrDefault(fs.ObjectMeta.Namespace), signing.TrustedKeySecretRef.Name)
+		if err != nil {
+			return osix.VerifyOptions{}, cleanup, err
+		}
+		keyName := signing.TrustedKeySecretRef.Key
+		if keyName == "" {
+			keyName = "cosign.pub"
+		}
+		keyData := data[keyName]
+		if len(keyData) == 0 {
+			return osix.VerifyOptions{}, cleanup, fmt.Errorf("trusted key secret %s/%s missing key %q", namespaceOrDefault(fs.ObjectMeta.Namespace), signing.TrustedKeySecretRef.Name, keyName)
+		}
+		dir, err := os.MkdirTemp("", "osix-trusted-key-*")
+		if err != nil {
+			return osix.VerifyOptions{}, cleanup, err
+		}
+		cleanup = func() { _ = os.RemoveAll(dir) }
+		keyPath := filepath.Join(dir, keyName)
+		if err := os.WriteFile(keyPath, keyData, 0o600); err != nil {
+			cleanup()
+			return osix.VerifyOptions{}, func() {}, err
+		}
+		opts.TrustedKey = keyPath
+	}
+	return opts, cleanup, nil
 }
 
 func (n Node) workspaceFor(volumeID string, fs k8soperator.AgentOCIFileSystem) string {
@@ -175,6 +316,20 @@ func encryptionRecipients(fs k8soperator.AgentOCIFileSystem) string {
 		return ""
 	}
 	return fs.Spec.Encryption.Recipients
+}
+
+func signingSigner(fs k8soperator.AgentOCIFileSystem) string {
+	if fs.Spec.Signing == nil {
+		return ""
+	}
+	return fs.Spec.Signing.Signer
+}
+
+func signingAttestation(fs k8soperator.AgentOCIFileSystem) string {
+	if fs.Spec.Signing == nil {
+		return ""
+	}
+	return fs.Spec.Signing.Attestation
 }
 
 func hasLocalRef(workspace, ref string) bool {

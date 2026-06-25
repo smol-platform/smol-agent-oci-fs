@@ -23,9 +23,8 @@ Use it when you need:
 
 The first Kubernetes surface is intentionally small and deterministic: the
 operator owns CRDs, manifests, health endpoints, and planning; the CSI node
-runtime invokes OSIx library calls for publish, snapshot, retention, and
-unpublish. Full CSI gRPC sidecars and richer controller reconciliation can wrap
-the same runtime boundary.
+runtime exposes a CSI gRPC node service and invokes OSIx library calls for
+publish, automatic snapshotting, retention, and unpublish.
 
 The current implementation provides:
 
@@ -37,24 +36,19 @@ The current implementation provides:
 - `osix-k8s-operator serve` health and readiness endpoints.
 - `osix-csi-node` publish, snapshot, and unpublish commands backed by the OSIx
   mount, watch, registry, compaction, and retention APIs.
-
-The next cluster-native step is to wrap the same node runtime in the Kubernetes
-CSI gRPC lifecycle and connect controller reconciliation to CRD status updates.
+- `osix-csi-node serve-csi`, a CSI identity/node server at
+  `osix.agent.smol.ai`.
+- Node-local automatic snapshot workers that restart from persisted CSI mount
+  records and do not require `osix watch` inside the workload container.
+- `AgentOCISnapshot`, `AgentOCIFileSystem` status, and Kubernetes Event
+  reporting from node workers.
 
 ## Install
 
 Build and publish images:
 
 ```sh
-docker buildx build --platform linux/amd64 \
-  -f Dockerfile.operator \
-  -t ghcr.io/smol-platform/smol-agent-oci-fs-operator:latest \
-  --push .
-
-docker buildx build --platform linux/amd64 \
-  -f Dockerfile.csi \
-  -t ghcr.io/smol-platform/smol-agent-oci-fs-csi:latest \
-  --push .
+OSIX_RELEASE_VERSION=v0.1.1 scripts/release-k8s-images.sh
 ```
 
 Install manifests:
@@ -90,7 +84,24 @@ Verify rollout:
 kubectl -n osix-system rollout status deployment/osix-operator
 kubectl -n osix-system rollout status daemonset/osix-csi-node
 kubectl -n osix-system get pods -o wide
+kubectl get csidriver osix.agent.smol.ai
 ```
+
+For a live gtr-provisioned cluster, first select the gtr kubeconfig/context and
+publish release images, then run:
+
+```sh
+OSIX_OPERATOR_IMAGE=ghcr.io/smol-platform/smol-agent-oci-fs-operator:v0.1.1 \
+OSIX_CSI_IMAGE=ghcr.io/smol-platform/smol-agent-oci-fs-csi:v0.1.1 \
+OSIX_GTR_STATE_REF=ghcr.io/acme/osix-autosnap-live \
+OSIX_GTR_REGISTRY_SECRET=osix-registry-auth \
+scripts/test-k8s-autosnap-gtr.sh
+```
+
+The script deploys the operator and CSI node driver, runs writer and reader
+workloads, waits for snapshot and checkpoint digests, and leaves evidence tags
+in the configured OCI repository. Set `OSIX_GTR_KEEP_NAMESPACE=true` to inspect
+cluster objects after a run.
 
 ## Resources
 
@@ -123,20 +134,26 @@ kubectl apply -f deploy/kubernetes/examples/pod.yaml
 Set `spec.stateRef` to a registry repository that accepts OCI Distribution
 pushes from the node driver.
 
-## Snapshot And Restore Flow
+## Automatic Snapshot And Restore Flow
 
 A typical agent lifecycle is:
 
 1. Create or mount an `AgentOCIFileSystem`.
-2. Start the agent workload with the OSIx target mounted.
-3. Run `osix watch` or the CSI-node snapshot path with a policy.
-4. Push snapshots and checkpoint tags to `spec.stateRef`.
+2. Bind an `AgentOCISnapshotPolicy` through `spec.snapshotPolicyRef`.
+3. Start the agent workload with the OSIx target mounted by CSI.
+4. Let the node-local CSI worker push snapshots and checkpoint tags to
+   `spec.stateRef`; the workload only writes files.
 5. Launch another agent with `sourceRef` set to `STATE_REPO:main`.
 6. Verify the new agent sees the prior workspace, memory, and handoff files.
 
-The deterministic node command path looks like this:
+The automatic node command path used by tests looks like this:
 
 ```sh
+osix-csi-node serve \
+  --addr 127.0.0.1:18081 \
+  --workspace-root /var/lib/osix \
+  --enable-workers
+
 osix-csi-node publish \
   --workspace-root /var/lib/osix \
   --target /state \
@@ -144,20 +161,17 @@ osix-csi-node publish \
   --name agent-a \
   --state ghcr.io/acme/agent-a-state \
   --base ghcr.io/acme/agent-base:latest \
-  --mode materialized
-
-osix-csi-node snapshot \
-  --workspace-root /var/lib/osix \
-  --target /state \
-  --volume-id pvc-agent-a \
-  --name agent-a \
-  --state ghcr.io/acme/agent-a-state \
-  --base ghcr.io/acme/agent-base:latest \
-  --push \
+  --mode materialized \
+  --auto-snapshot \
+  --every 30s \
   --max-dirty 1MiB \
+  --push=true \
   --compact-every 1 \
   --squash-every 2 \
   --checkpoint-tag-prefix checkpoint
+
+# The workload writes files only. The node-local worker snapshots and pushes.
+printf "handoff\n" > /state/agent/workspace/handoff.txt
 
 osix-csi-node publish \
   --workspace-root /var/lib/osix \
@@ -189,16 +203,36 @@ osix watch agentfs \
 
 ## Registry Credentials
 
-The operator API models registry credentials with `registrySecretRef`. Node
-runtime processes should project that secret into OSIx-compatible environment
-or Docker config material. OSIx currently discovers registry credentials from:
+The operator API models registry credentials with `registrySecretRef`. The CSI
+node reads that Kubernetes Secret with its service account and projects values
+only around the pull/push operation. OSIx currently discovers registry
+credentials from:
 
 - `OSIX_REGISTRY_TOKEN`
 - `OSIX_REGISTRY_USERNAME` and `OSIX_REGISTRY_PASSWORD`
 - Docker `config.json` auth entries
 - Docker credential helpers under `DOCKER_CONFIG` or `~/.docker/config.json`
 
-Credential values must not be copied into CRD status or snapshot metadata.
+Credential values must not be copied into CRD status, events, logs, or snapshot
+metadata. The node reporter redacts common token, password, secret, credential,
+and bearer authorization patterns before writing Kubernetes status or Events.
+
+Supported Secret keys are:
+
+- `token`, `accessToken`, `identitytoken`, or `identityToken` for bearer auth.
+- `username` or `user` plus `password` or `passwd` for basic auth.
+- `.dockerconfigjson`, `dockerconfigjson`, `config.json`, or
+  `dockerConfigJson` for Docker config auth material.
+
+Example:
+
+```sh
+kubectl -n agents create secret generic osix-registry-auth \
+  --from-literal=username="$REGISTRY_USER" \
+  --from-literal=password="$REGISTRY_PASSWORD"
+```
+
+Then reference it from `AgentOCIFileSystem.spec.registrySecretRef.name`.
 
 For workloads that invoke `osix watch` directly, project credentials into the
 container as environment variables:
@@ -219,6 +253,21 @@ env:
 
 For private runtime images, use normal Kubernetes `imagePullSecrets`; do not
 reuse the OSIx push credentials unless that is intentional.
+
+## Restore Verification
+
+When `spec.sourceRef` points at a registry ref and `spec.signing` is set, the
+CSI node pulls the source and verifies it before mounting it into a new agent.
+With `trustedKeySecretRef`, the node reads the configured public key from a
+Kubernetes Secret and passes it to OSIx verification. Without a trusted key, the
+node requires the pulled snapshot to have OSIx-native signature metadata that
+`osix verify` can validate locally.
+
+For Sigstore-backed restores, set `spec.signing.certificateIdentity` and
+`spec.signing.certificateOIDCIssuer`, or their `*Regexp` variants, to constrain
+the signer identity and issuer before the restored state is handed to the
+workload. `spec.signing.sigstoreTrustedRoot` can point at a mounted trusted-root
+bundle when the default verifier roots are not appropriate for the cluster.
 
 ## Observability
 
@@ -250,14 +299,26 @@ writes through the mount target, snapshots and pushes, compacts into a
 checkpoint, restores from the remote `main` tag into a second volume, and
 unpublishes both volumes.
 
+Run the automatic snapshot Docker test:
+
+```sh
+scripts/test-k8s-autosnap-docker.sh
+```
+
+That test starts a local OCI registry, runs `osix-csi-node serve
+--enable-workers`, publishes a writer volume with `--auto-snapshot`, mutates
+files without invoking `osix watch` or `osix-csi-node snapshot`, waits for
+automatic pushed snapshots/checkpoints, and launches a second volume from the
+pushed `main` tag.
+
 ## Live Cluster Verification
 
 A useful cluster acceptance test is:
 
 1. Deploy the operator and CSI node image.
 2. Create registry credentials in a temporary namespace.
-3. Run a writer Job that starts `osix watch --push`, mutates
-   `/agent/workspace`, and waits for snapshots/checkpoints.
+3. Run a writer Job that only mutates `/agent/workspace` on an OSIx CSI volume
+   with `autoSnapshot` policy context.
 4. Pull `STATE_REPO:main` from outside the cluster and restore it locally.
 5. Run a reader Job that publishes with `--source STATE_REPO:main`.
 6. Assert the reader sees the writer's transcript and handoff marker.

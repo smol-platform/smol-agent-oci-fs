@@ -19,6 +19,7 @@ import (
 )
 
 type RegistryReference struct {
+	Scheme    string
 	Registry  string
 	Repo      string
 	Reference string
@@ -77,11 +78,11 @@ func ParseRegistryReference(ref string) (RegistryReference, error) {
 		name = ref[:colon]
 		reference = ref[colon+1:]
 	}
-	parts := strings.SplitN(name, "/", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return out, fmt.Errorf("registry reference %q must be REGISTRY/REPO:TAG or REGISTRY/REPO@DIGEST", ref)
+	remote, err := parseRegistryRepo(name)
+	if err != nil {
+		return out, fmt.Errorf("registry reference %q must be REGISTRY/REPO:TAG or REGISTRY/REPO@DIGEST: %w", ref, err)
 	}
-	return RegistryReference{Registry: parts[0], Repo: parts[1], Reference: reference}, nil
+	return RegistryReference{Scheme: remote.Scheme, Registry: remote.Registry, Repo: remote.Repo, Reference: reference}, nil
 }
 
 func IsRegistryReference(ref string) bool {
@@ -98,7 +99,7 @@ func ProbeRegistryAccess(remoteRepo string, opts RegistryProbeOptions) (Registry
 	if tag == "" {
 		tag = "osix-probe-" + time.Now().UTC().Format("20060102T150405Z")
 	}
-	client := newRegistryClient(remote.Registry, remote.Repo)
+	client := newRegistryClientForRepo(remote)
 	configData := []byte(`{"createdBy":"osix registry probe"}`)
 	layerData := []byte("osix registry probe\n")
 	configDigest := digestBytes(configData)
@@ -179,7 +180,7 @@ func PruneRemoteSnapshots(remoteRepo string, digests []string) ([]string, error)
 	if err != nil {
 		return nil, err
 	}
-	client := newRegistryClient(remote.Registry, remote.Repo)
+	client := newRegistryClientForRepo(remote)
 	var deleted []string
 	for _, digest := range uniqueTags(digests) {
 		if strings.TrimSpace(digest) == "" {
@@ -212,7 +213,7 @@ func PushSnapshotWithOptions(workspaceRoot, remoteRepo, ref string, extraTags []
 	if err != nil {
 		return err
 	}
-	client := newRegistryClient(remote.Registry, remote.Repo)
+	client := newRegistryClientForRepo(remote)
 	chain, err := s.snapshotChainWithDigests(digest)
 	if err != nil {
 		return err
@@ -303,7 +304,7 @@ func PullSnapshotWithOptions(workspaceRoot, remoteRef, localTag string, opts Pul
 	if err != nil {
 		return "", err
 	}
-	client := newRegistryClient(ref.Registry, ref.Repo)
+	client := newRegistryClientWithScheme(ref.Scheme, ref.Registry, ref.Repo)
 	digest, err := pullManifestRecursive(s, client, ref.Reference, opts)
 	if err != nil {
 		return "", err
@@ -337,7 +338,7 @@ func pullManifestRecursive(s store, client registryClient, ref string, opts Pull
 	}
 	for _, layer := range manifest.Layers {
 		if opts.Lazy {
-			if err := s.writeRemoteBlobSource(remoteBlobSource{Registry: client.registry, Repo: client.repo, Digest: layer.Digest}); err != nil {
+			if err := s.writeRemoteBlobSource(remoteBlobSource{Scheme: client.scheme, Registry: client.registry, Repo: client.repo, Digest: layer.Digest}); err != nil {
 				return "", err
 			}
 			continue
@@ -385,7 +386,7 @@ func fetchRemoteBlobFromSource(s store, digest string) error {
 	if err != nil {
 		return fmt.Errorf("no remote source for lazy blob %s: %w", digest, err)
 	}
-	client := newRegistryClient(source.Registry, source.Repo)
+	client := newRegistryClientWithScheme(source.Scheme, source.Registry, source.Repo)
 	return fetchRemoteBlob(s, client, digest)
 }
 
@@ -766,7 +767,7 @@ func pullReferrerManifest(s store, client registryClient, ref, subjectDigest str
 		}
 		return s.writeRef(refName, layer.Digest)
 	case MediaTypeLazyEncryptedIndex:
-		if err := s.writeRemoteBlobSource(remoteBlobSource{Registry: client.registry, Repo: client.repo, Digest: layer.Digest}); err != nil {
+		if err := s.writeRemoteBlobSource(remoteBlobSource{Scheme: client.scheme, Registry: client.registry, Repo: client.repo, Digest: layer.Digest}); err != nil {
 			return err
 		}
 		return s.writeRef(encryptedLazyIndexRefName(subjectDigest), layer.Digest)
@@ -849,6 +850,7 @@ func pullEncryptedLazyIndexTag(s store, client registryClient, subjectDigest str
 }
 
 type registryRepo struct {
+	Scheme   string
 	Registry string
 	Repo     string
 }
@@ -872,7 +874,24 @@ func isRegistryNotFound(err error) bool {
 func parseRegistryRepo(remoteRepo string) (registryRepo, error) {
 	remoteRepo = strings.TrimSpace(remoteRepo)
 	if strings.Contains(remoteRepo, "://") {
-		return registryRepo{}, fmt.Errorf("registry repo should not include scheme: %s", remoteRepo)
+		u, err := url.Parse(remoteRepo)
+		if err != nil {
+			return registryRepo{}, fmt.Errorf("parse registry repo %q: %w", remoteRepo, err)
+		}
+		if u.Scheme != "http" && u.Scheme != "https" {
+			return registryRepo{}, fmt.Errorf("registry repo scheme must be http or https, got %q", u.Scheme)
+		}
+		if u.Host == "" {
+			return registryRepo{}, fmt.Errorf("registry repo must include registry host, got %q", remoteRepo)
+		}
+		if u.RawQuery != "" || u.Fragment != "" {
+			return registryRepo{}, fmt.Errorf("registry repo must not include query or fragment, got %q", remoteRepo)
+		}
+		repo := strings.TrimPrefix(u.Path, "/")
+		if repo == "" {
+			return registryRepo{}, fmt.Errorf("registry repo must include repository path, got %q", remoteRepo)
+		}
+		return registryRepo{Scheme: u.Scheme, Registry: u.Host, Repo: repo}, nil
 	}
 	parts := strings.SplitN(remoteRepo, "/", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
@@ -882,6 +901,13 @@ func parseRegistryRepo(remoteRepo string) (registryRepo, error) {
 }
 
 func registryBaseURL(registry string) string {
+	return registryBaseURLWithScheme("", registry)
+}
+
+func registryBaseURLWithScheme(scheme, registry string) string {
+	if scheme == "http" || scheme == "https" {
+		return scheme + "://" + registry
+	}
 	if isLocalRegistry(registry) {
 		return "http://" + registry
 	}
@@ -906,6 +932,7 @@ func isLocalRegistry(registry string) bool {
 }
 
 type registryClient struct {
+	scheme       string
 	registry     string
 	base         string
 	repo         string
@@ -921,9 +948,18 @@ type registryCredentials struct {
 }
 
 func newRegistryClient(registry, repo string) registryClient {
+	return newRegistryClientWithScheme("", registry, repo)
+}
+
+func newRegistryClientForRepo(remote registryRepo) registryClient {
+	return newRegistryClientWithScheme(remote.Scheme, remote.Registry, remote.Repo)
+}
+
+func newRegistryClientWithScheme(scheme, registry, repo string) registryClient {
 	return registryClient{
+		scheme:       scheme,
 		registry:     registry,
-		base:         registryBaseURL(registry),
+		base:         registryBaseURLWithScheme(scheme, registry),
 		repo:         repo,
 		http:         http.DefaultClient,
 		auth:         loadRegistryCredentials(registry),

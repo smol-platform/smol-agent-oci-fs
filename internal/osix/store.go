@@ -170,6 +170,7 @@ func (s store) hasBlob(digest string) bool {
 }
 
 type remoteBlobSource struct {
+	Scheme   string `json:"scheme,omitempty"`
 	Registry string `json:"registry"`
 	Repo     string `json:"repo"`
 	Digest   string `json:"digest"`

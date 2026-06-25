@@ -18,7 +18,8 @@ Usage:
   osix-csi-node publish --workspace-root DIR --target DIR --volume-id ID --name NAME --state REF --base IMAGE [--source REF] [--mode auto|overlay|fuse|materialized]
   osix-csi-node snapshot --workspace-root DIR --target DIR --volume-id ID --name NAME --state REF --base IMAGE [--push] [--compact-every N] [--squash-every N] [--prune-local] [--prune-remote]
   osix-csi-node unpublish --workspace-root DIR --target DIR --volume-id ID --name NAME --state REF --base IMAGE [--final-snapshot]
-  osix-csi-node serve [--addr ADDR]
+  osix-csi-node serve [--addr ADDR] [--workspace-root DIR --enable-workers]
+  osix-csi-node serve-csi --endpoint unix:///csi/csi.sock --workspace-root DIR [--node-id ID --enable-workers --metrics-addr ADDR]
 `
 
 func main() {
@@ -42,6 +43,8 @@ func run(args []string) error {
 		return runUnpublish(args[1:])
 	case "serve":
 		return runServe(args[1:])
+	case "serve-csi":
+		return runServeCSI(args[1:])
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
@@ -92,15 +95,19 @@ func (f nodeFlags) fileSystem() k8soperator.AgentOCIFileSystem {
 func runPublish(args []string) error {
 	fs := flag.NewFlagSet("publish", flag.ContinueOnError)
 	flags := addNodeFlags(fs)
+	policy := addSnapshotPolicyFlags(fs)
+	autoSnapshot := fs.Bool("auto-snapshot", false, "start automatic snapshotting from the persisted mount record")
 	fs.SetOutput(os.Stderr)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	node := csinode.Node{WorkspaceRoot: flags.workspaceRoot}
 	result, err := node.Publish(context.Background(), csinode.PublishRequest{
-		FileSystem: flags.fileSystem(),
-		VolumeID:   flags.volumeID,
-		TargetPath: flags.target,
+		FileSystem:   flags.fileSystem(),
+		Policy:       policy,
+		VolumeID:     flags.volumeID,
+		TargetPath:   flags.target,
+		AutoSnapshot: *autoSnapshot,
 	})
 	if err != nil {
 		return err
@@ -163,9 +170,27 @@ func addSnapshotPolicyFlags(fs *flag.FlagSet) *k8soperator.AgentOCISnapshotPolic
 func runServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	addr := fs.String("addr", ":8081", "health listen address")
+	workspaceRoot := fs.String("workspace-root", "", "node-local workspace root for autosnapshot workers")
+	enableWorkers := fs.Bool("enable-workers", false, "run node-local autosnapshot workers from persisted mount records")
 	fs.SetOutput(os.Stderr)
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *enableWorkers {
+		if *workspaceRoot == "" {
+			return fmt.Errorf("--workspace-root is required with --enable-workers")
+		}
+		node := csinode.Node{WorkspaceRoot: *workspaceRoot}
+		reporters := csinode.MultiReporter{csinode.FileReporter{Root: node.ReportsDir()}}
+		if kubeReporter, ok := csinode.NewInClusterKubernetesReporter(); ok {
+			reporters = append(reporters, kubeReporter)
+		}
+		manager := csinode.NewWorkerManager(node, reporters)
+		go func() {
+			if err := manager.Run(context.Background()); err != nil && err != context.Canceled {
+				fmt.Fprintf(os.Stderr, "osix-csi-node workers: %v\n", err)
+			}
+		}()
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -176,5 +201,42 @@ func runServe(args []string) error {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ready","component":"osix-csi-node"}` + "\n"))
 	})
+	mux.Handle("/metrics", csinode.MetricsHandler())
 	return http.ListenAndServe(*addr, mux)
+}
+
+func runServeCSI(args []string) error {
+	fs := flag.NewFlagSet("serve-csi", flag.ContinueOnError)
+	endpoint := fs.String("endpoint", "unix:///csi/csi.sock", "CSI Unix socket endpoint")
+	workspaceRoot := fs.String("workspace-root", "", "node-local workspace root")
+	nodeID := fs.String("node-id", "", "CSI node id")
+	enableWorkers := fs.Bool("enable-workers", true, "run node-local autosnapshot workers from persisted mount records")
+	metricsAddr := fs.String("metrics-addr", ":9809", "Prometheus metrics listen address, empty to disable")
+	fs.SetOutput(os.Stderr)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *workspaceRoot == "" {
+		return fmt.Errorf("--workspace-root is required")
+	}
+	node := csinode.Node{WorkspaceRoot: *workspaceRoot}
+	reporters := csinode.MultiReporter{csinode.FileReporter{Root: node.ReportsDir()}}
+	if kubeReporter, ok := csinode.NewInClusterKubernetesReporter(); ok {
+		reporters = append(reporters, kubeReporter)
+	}
+	if *metricsAddr != "" {
+		go func() {
+			mux := http.NewServeMux()
+			mux.Handle("/metrics", csinode.MetricsHandler())
+			if err := http.ListenAndServe(*metricsAddr, mux); err != nil {
+				fmt.Fprintf(os.Stderr, "osix-csi-node metrics: %v\n", err)
+			}
+		}()
+	}
+	return csinode.ServeCSI(context.Background(), node, csinode.CSIServerOptions{
+		Endpoint:      *endpoint,
+		NodeID:        *nodeID,
+		EnableWorkers: *enableWorkers,
+		Reporter:      reporters,
+	})
 }

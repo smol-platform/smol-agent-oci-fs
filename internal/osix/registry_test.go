@@ -1392,6 +1392,18 @@ func TestParseRegistryReference(t *testing.T) {
 			Repo:      "acme/state",
 			Reference: "snap",
 		},
+		"http://registry.registry.svc.cluster.local:5000/acme/state:main": {
+			Scheme:    "http",
+			Registry:  "registry.registry.svc.cluster.local:5000",
+			Repo:      "acme/state",
+			Reference: "main",
+		},
+		"https://registry.example.io/acme/state@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": {
+			Scheme:    "https",
+			Registry:  "registry.example.io",
+			Repo:      "acme/state",
+			Reference: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		},
 		"ghcr.io/acme/state@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": {
 			Registry:  "ghcr.io",
 			Repo:      "acme/state",
@@ -1405,6 +1417,34 @@ func TestParseRegistryReference(t *testing.T) {
 		}
 		if got != want {
 			t.Fatalf("%s: want %#v got %#v", input, want, got)
+		}
+	}
+}
+
+func TestParseRegistryRepoWithExplicitScheme(t *testing.T) {
+	cases := map[string]registryRepo{
+		"http://registry.registry.svc.cluster.local:5000/acme/state": {
+			Scheme:   "http",
+			Registry: "registry.registry.svc.cluster.local:5000",
+			Repo:     "acme/state",
+		},
+		"https://registry.example.io/acme/nested/state": {
+			Scheme:   "https",
+			Registry: "registry.example.io",
+			Repo:     "acme/nested/state",
+		},
+	}
+	for input, want := range cases {
+		got, err := parseRegistryRepo(input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("%s: want %#v got %#v", input, want, got)
+		}
+		client := newRegistryClientForRepo(got)
+		if got.Scheme != "" && !strings.HasPrefix(client.base, got.Scheme+"://") {
+			t.Fatalf("%s: client base %q does not use explicit scheme %q", input, client.base, got.Scheme)
 		}
 	}
 }

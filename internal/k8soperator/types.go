@@ -62,10 +62,18 @@ type EncryptionSpec struct {
 }
 
 type SigningSpec struct {
-	Signer                 string             `json:"signer,omitempty" yaml:"signer,omitempty"`
-	Attestation            string             `json:"attestation,omitempty" yaml:"attestation,omitempty"`
-	TrustedKeySecretRef    *SecretKeySelector `json:"trustedKeySecretRef,omitempty" yaml:"trustedKeySecretRef,omitempty"`
-	IdentityTokenSecretRef *SecretKeySelector `json:"identityTokenSecretRef,omitempty" yaml:"identityTokenSecretRef,omitempty"`
+	Signer                       string             `json:"signer,omitempty" yaml:"signer,omitempty"`
+	Attestation                  string             `json:"attestation,omitempty" yaml:"attestation,omitempty"`
+	TrustedKeySecretRef          *SecretKeySelector `json:"trustedKeySecretRef,omitempty" yaml:"trustedKeySecretRef,omitempty"`
+	IdentityTokenSecretRef       *SecretKeySelector `json:"identityTokenSecretRef,omitempty" yaml:"identityTokenSecretRef,omitempty"`
+	CertificateIdentity          string             `json:"certificateIdentity,omitempty" yaml:"certificateIdentity,omitempty"`
+	CertificateIdentityRegexp    string             `json:"certificateIdentityRegexp,omitempty" yaml:"certificateIdentityRegexp,omitempty"`
+	CertificateOIDCIssuer        string             `json:"certificateOIDCIssuer,omitempty" yaml:"certificateOIDCIssuer,omitempty"`
+	CertificateOIDCIssuerRegexp  string             `json:"certificateOIDCIssuerRegexp,omitempty" yaml:"certificateOIDCIssuerRegexp,omitempty"`
+	SigstoreTrustedRoot          string             `json:"sigstoreTrustedRoot,omitempty" yaml:"sigstoreTrustedRoot,omitempty"`
+	SigstoreIgnoreTlog           bool               `json:"sigstoreIgnoreTlog,omitempty" yaml:"sigstoreIgnoreTlog,omitempty"`
+	SigstoreIgnoreTimestamp      bool               `json:"sigstoreIgnoreTimestamp,omitempty" yaml:"sigstoreIgnoreTimestamp,omitempty"`
+	SigstoreIgnoreCertificateSCT bool               `json:"sigstoreIgnoreCertificateSCT,omitempty" yaml:"sigstoreIgnoreCertificateSCT,omitempty"`
 }
 
 type AgentOCISnapshotPolicy struct {

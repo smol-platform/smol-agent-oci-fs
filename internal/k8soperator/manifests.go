@@ -10,6 +10,7 @@ func RenderInstallManifests() string {
 		crdAgentOCIRuntimeClass,
 		rbacManifest,
 		operatorDeployment,
+		csiDriverManifest,
 		csiNodeDaemonSet,
 		storageClassManifest,
 	}
@@ -75,6 +76,14 @@ spec:
                     properties:
                       name: {type: string}
                       key: {type: string}
+                  certificateIdentity: {type: string}
+                  certificateIdentityRegexp: {type: string}
+                  certificateOIDCIssuer: {type: string}
+                  certificateOIDCIssuerRegexp: {type: string}
+                  sigstoreTrustedRoot: {type: string}
+                  sigstoreIgnoreTlog: {type: boolean}
+                  sigstoreIgnoreTimestamp: {type: boolean}
+                  sigstoreIgnoreCertificateSCT: {type: boolean}
               snapshotPolicyRef:
                 type: object
                 properties:
@@ -275,6 +284,16 @@ spec:
             path: /healthz
             port: health`
 
+const csiDriverManifest = `apiVersion: storage.k8s.io/v1
+kind: CSIDriver
+metadata:
+  name: osix.agent.smol.ai
+spec:
+  attachRequired: false
+  podInfoOnMount: true
+  volumeLifecycleModes:
+  - Persistent`
+
 const csiNodeDaemonSet = `apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -293,21 +312,23 @@ spec:
       containers:
       - name: node
         image: ghcr.io/smol-platform/smol-agent-oci-fs-csi:latest
-        args: ["serve", "--addr", ":8081"]
+        args:
+        - serve-csi
+        - --endpoint
+        - unix:///csi/csi.sock
+        - --workspace-root
+        - /var/lib/osix
+        - --enable-workers
+        - --metrics-addr
+        - :9809
         ports:
-        - containerPort: 8081
-          name: health
-        readinessProbe:
-          httpGet:
-            path: /readyz
-            port: health
-        livenessProbe:
-          httpGet:
-            path: /healthz
-            port: health
+        - containerPort: 9809
+          name: metrics
         securityContext:
           privileged: true
         volumeMounts:
+        - name: plugin-dir
+          mountPath: /csi
         - name: kubelet
           mountPath: /var/lib/kubelet
           mountPropagation: Bidirectional
@@ -315,7 +336,42 @@ spec:
           mountPath: /var/lib/osix
         - name: dev-fuse
           mountPath: /dev/fuse
+      - name: node-driver-registrar
+        image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.11.1
+        args:
+        - --csi-address=/csi/csi.sock
+        - --kubelet-registration-path=/var/lib/kubelet/plugins/osix.agent.smol.ai/csi.sock
+        volumeMounts:
+        - name: plugin-dir
+          mountPath: /csi
+        - name: registration-dir
+          mountPath: /registration
+      - name: liveness-probe
+        image: registry.k8s.io/sig-storage/livenessprobe:v2.13.1
+        args:
+        - --csi-address=/csi/csi.sock
+        - --health-port=9808
+        ports:
+        - containerPort: 9808
+          name: healthz
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: healthz
+          initialDelaySeconds: 10
+          timeoutSeconds: 3
+        volumeMounts:
+        - name: plugin-dir
+          mountPath: /csi
       volumes:
+      - name: plugin-dir
+        hostPath:
+          path: /var/lib/kubelet/plugins/osix.agent.smol.ai
+          type: DirectoryOrCreate
+      - name: registration-dir
+        hostPath:
+          path: /var/lib/kubelet/plugins_registry
+          type: DirectoryOrCreate
       - name: kubelet
         hostPath:
           path: /var/lib/kubelet
@@ -332,7 +388,7 @@ const storageClassManifest = `apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
   name: osix-agent-state
-provisioner: agent.smol.ai/osix
+provisioner: osix.agent.smol.ai
 volumeBindingMode: WaitForFirstConsumer
 parameters:
   mountMode: auto`

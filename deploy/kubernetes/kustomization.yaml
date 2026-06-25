@@ -8,5 +8,6 @@ resources:
   - crds/agentociruntimeclasses.yaml
   - rbac.yaml
   - operator.yaml
+  - csidriver.yaml
   - csi-node.yaml
   - storageclass.yaml

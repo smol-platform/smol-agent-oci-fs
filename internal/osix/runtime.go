@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -398,6 +399,40 @@ func dirtyBytesForTarget(workspaceRoot, target string) (int64, error) {
 	}
 	_, dirtyBytes, err := scanTree(target)
 	return dirtyBytes, err
+}
+
+func TargetChanges(workspaceRoot, target, ref string) (TargetChangeSummary, error) {
+	s, err := findStore(workspaceRoot)
+	if err != nil {
+		return TargetChangeSummary{}, err
+	}
+	if strings.TrimSpace(ref) == "" {
+		ref = "latest"
+	}
+	summary := TargetChangeSummary{Reference: ref}
+	_, _, parentCfg, err := s.loadManifest(ref)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) || strings.Contains(err.Error(), "no such file") {
+			_, dirtyBytes, scanErr := scanTree(target)
+			if scanErr != nil {
+				return TargetChangeSummary{}, scanErr
+			}
+			summary.MissingReference = true
+			summary.Changed = true
+			summary.DirtyBytes = dirtyBytes
+			return summary, nil
+		}
+		return TargetChangeSummary{}, err
+	}
+	currentTree, _, err := scanTree(target)
+	if err != nil {
+		return TargetChangeSummary{}, err
+	}
+	layerEntries, whiteouts := diffLayerEntries(parentCfg.Tree, currentTree)
+	summary.ChangeCount = len(layerEntries) + len(whiteouts)
+	summary.Changed = summary.ChangeCount > 0
+	summary.DirtyBytes = dirtyBytesForEntries(layerEntries)
+	return summary, nil
 }
 
 func flushRuntimeForTarget(workspaceRoot, target string) error {

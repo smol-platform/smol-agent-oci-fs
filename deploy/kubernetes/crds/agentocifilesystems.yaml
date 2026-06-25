@@ -71,6 +71,22 @@ spec:
                           type: string
                         key:
                           type: string
+                    certificateIdentity:
+                      type: string
+                    certificateIdentityRegexp:
+                      type: string
+                    certificateOIDCIssuer:
+                      type: string
+                    certificateOIDCIssuerRegexp:
+                      type: string
+                    sigstoreTrustedRoot:
+                      type: string
+                    sigstoreIgnoreTlog:
+                      type: boolean
+                    sigstoreIgnoreTimestamp:
+                      type: boolean
+                    sigstoreIgnoreCertificateSCT:
+                      type: boolean
                 snapshotPolicyRef:
                   type: object
                   properties:

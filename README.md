@@ -67,11 +67,7 @@ go build -o ./osix-csi-node ./cmd/osix-csi-node
 Build Kubernetes images:
 
 ```sh
-docker build -f Dockerfile.operator \
-  -t ghcr.io/smol-platform/smol-agent-oci-fs-operator:latest .
-
-docker build -f Dockerfile.csi \
-  -t ghcr.io/smol-platform/smol-agent-oci-fs-csi:latest .
+OSIX_RELEASE_VERSION=v0.1.1 scripts/release-k8s-images.sh
 ```
 
 ## Demo
@@ -177,8 +173,8 @@ Filesystem runtime modes:
 OSIx can be installed into Kubernetes with an operator Deployment, CRDs, a
 node-local CSI runtime DaemonSet, RBAC, and a StorageClass. The Kubernetes
 pieces let a cluster treat an agent filesystem as a registry-backed state image:
-a workload writes files, OSIx watches and snapshots them, checkpoints are pushed
-to an OCI registry, and a later workload can launch from the pushed `main` tag.
+a workload writes files, node-local CSI workers snapshot and checkpoint them to
+an OCI registry, and a later workload can launch from the pushed `main` tag.
 
 The operator API defines:
 
@@ -211,10 +207,22 @@ Run the deterministic Docker integration test:
 scripts/test-k8s-operator-docker.sh
 ```
 
-The operator and CSI node expose `/healthz` and `/readyz`. The CSI node command
+Run the automatic snapshot Docker integration test:
+
+```sh
+scripts/test-k8s-autosnap-docker.sh
+```
+
+The operator exposes `/healthz` and `/readyz`, and the CSI node can run either
+the health server or the kubelet-facing CSI gRPC server. The CSI node command
 surface can also be used directly for deterministic tests:
 
 ```sh
+osix-csi-node serve \
+  --addr 127.0.0.1:18081 \
+  --workspace-root /var/lib/osix \
+  --enable-workers
+
 osix-csi-node publish \
   --workspace-root /var/lib/osix \
   --target /var/lib/kubelet/pods/example/volumes/osix \
@@ -222,18 +230,15 @@ osix-csi-node publish \
   --name research-agent-a \
   --state ghcr.io/acme/research-agent-a \
   --base ghcr.io/acme/agent-base:latest \
-  --mode materialized
-
-osix-csi-node snapshot \
-  --workspace-root /var/lib/osix \
-  --target /var/lib/kubelet/pods/example/volumes/osix \
-  --volume-id pvc-example \
-  --name research-agent-a \
-  --state ghcr.io/acme/research-agent-a \
-  --base ghcr.io/acme/agent-base:latest \
-  --push \
+  --mode materialized \
+  --auto-snapshot \
+  --every 30s \
+  --max-dirty 1MiB \
+  --push=true \
   --compact-every 1 \
   --squash-every 2
+
+# The workload writes files only. The node worker snapshots and pushes.
 
 osix-csi-node publish \
   --workspace-root /var/lib/osix \
@@ -245,6 +250,15 @@ osix-csi-node publish \
   --source ghcr.io/acme/research-agent-a:main \
   --mode materialized
 ```
+
+Repeatable Kubernetes checks live under `scripts/`:
+
+- `scripts/test-k8s-autosnap-docker.sh` proves automatic worker snapshotting and
+  second-agent restore against a local Docker registry.
+- `scripts/test-k8s-autosnap-kind.sh` deploys the operator/CSI stack to Kind and
+  verifies writer-to-reader restore through CSI.
+- `scripts/test-k8s-autosnap-gtr.sh` runs the same flow against a live
+  gtr-provisioned cluster and registry.
 
 See [docs/kubernetes-operator.md](docs/kubernetes-operator.md) for the detailed
 operator design, install flow, image publishing, registry credentials, CRD
@@ -274,7 +288,7 @@ Implemented commands:
 - `osix show`
 - `osix refs`
 - `osix-k8s-operator render-install/plan/serve`
-- `osix-csi-node publish/snapshot/unpublish/serve`
+- `osix-csi-node publish/snapshot/unpublish/serve/serve-csi`
 
 ## Current Limits
 
