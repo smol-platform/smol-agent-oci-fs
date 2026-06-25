@@ -260,6 +260,16 @@ Repeatable Kubernetes checks live under `scripts/`:
 - `scripts/test-k8s-autosnap-gtr.sh` runs the same flow against a live
   gtr-provisioned cluster and registry.
 
+GitHub Actions run the self-contained coverage on pull requests and `main`:
+
+- `CI` runs Go tests on Linux and macOS, shell syntax checks, the hosted
+  registry harness smoke suite, Docker registry/retention/operator/autosnapshot
+  integration tests, optional FUSE integration when `/dev/fuse` is available,
+  and the Kind CSI autosnapshot E2E.
+- `Images` builds the operator and CSI images with Docker Buildx for
+  `linux/amd64` and `linux/arm64`; it pushes to GHCR on `main`, `v*` tags, or
+  manual dispatch when image pushing is enabled.
+
 See [docs/kubernetes-operator.md](docs/kubernetes-operator.md) for the detailed
 operator design, install flow, image publishing, registry credentials, CRD
 examples, and live workload verification pattern.

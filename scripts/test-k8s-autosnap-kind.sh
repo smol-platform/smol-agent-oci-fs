@@ -132,7 +132,7 @@ spec:
           sleep 4
           printf "v2\n" > /state/agent/workspace/file.txt
           printf "reader restore marker\n" > /state/agent/workspace/second.txt
-          sleep 120
+          sleep 8
       volumeMounts:
         - name: state
           mountPath: /state
@@ -143,6 +143,20 @@ spec:
 YAML
 
 kubectl -n agents wait pod/autosnap-writer --for=condition=Ready --timeout=120s
+deadline=$((SECONDS + 120))
+while [ "${SECONDS}" -lt "${deadline}" ]; do
+	if kubectl -n agents exec autosnap-writer -- sh -c 'grep -qx "v2" /state/agent/workspace/file.txt && grep -qx "reader restore marker" /state/agent/workspace/second.txt' >/dev/null 2>&1; then
+		break
+	fi
+	sleep 2
+done
+if ! kubectl -n agents exec autosnap-writer -- sh -c 'grep -qx "v2" /state/agent/workspace/file.txt && grep -qx "reader restore marker" /state/agent/workspace/second.txt' >/dev/null 2>&1; then
+	kubectl -n agents describe pod/autosnap-writer >&2 || true
+	kubectl -n agents logs autosnap-writer >&2 || true
+	echo "timed out waiting for autosnap-writer final marker" >&2
+	exit 1
+fi
+kubectl -n agents wait pod/autosnap-writer --for=jsonpath='{.status.phase}'=Succeeded --timeout=180s
 
 deadline=$((SECONDS + 180))
 snapshot_name=""
@@ -230,5 +244,12 @@ spec:
         claimName: autosnap-kind-reader
 YAML
 
-kubectl -n agents wait pod/autosnap-reader --for=jsonpath='{.status.phase}'=Succeeded --timeout=180s
+if ! kubectl -n agents wait pod/autosnap-reader --for=jsonpath='{.status.phase}'=Succeeded --timeout=180s; then
+	kubectl -n agents describe pod/autosnap-reader >&2 || true
+	kubectl -n agents logs autosnap-reader >&2 || true
+	kubectl -n agents get events --sort-by=.lastTimestamp >&2 || true
+	kubectl -n osix-system logs daemonset/osix-csi-node -c node --tail=200 >&2 || true
+	echo "timed out waiting for autosnap-reader to restore expected state" >&2
+	exit 1
+fi
 echo "OSIX_K8S_AUTOSNAP_KIND_TEST_PASSED"

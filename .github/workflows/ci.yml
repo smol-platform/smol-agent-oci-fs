@@ -1,0 +1,139 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    name: Go tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check formatting
+        shell: bash
+        run: |
+          set -euo pipefail
+          unformatted="$(git ls-files -z '*.go' | xargs -0 gofmt -l)"
+          if [ -n "${unformatted}" ]; then
+            echo "Go files need gofmt:" >&2
+            echo "${unformatted}" >&2
+            exit 1
+          fi
+
+      - name: Check shell syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r script; do
+            bash -n "${script}"
+          done < <(git ls-files 'scripts/*.sh')
+
+      - name: Run Go test suite
+        run: go test ./...
+
+      - name: Run race detector
+        if: runner.os == 'Linux'
+        run: go test -race ./...
+
+  hosted-registry-harness:
+    name: Hosted registry harness smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run hosted registry local harness
+        run: scripts/test-registry-hosted-local.sh
+
+  docker-integration:
+    name: Docker integration tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run local registry integration
+        run: scripts/test-registry-docker.sh
+
+      - name: Run retention integration
+        run: scripts/test-retention-docker.sh
+
+      - name: Run operator integration
+        run: scripts/test-k8s-operator-docker.sh
+
+      - name: Run autosnapshot integration
+        run: scripts/test-k8s-autosnap-docker.sh
+
+      - name: Run FUSE integration when available
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -e /dev/fuse ]; then
+            echo "/dev/fuse is not available on this runner; skipping FUSE integration"
+            exit 0
+          fi
+          scripts/test-fuse-docker.sh
+
+  kind-e2e:
+    name: Kind CSI autosnapshot E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Kind and kubectl
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL -o kind https://kind.sigs.k8s.io/dl/v0.29.0/kind-linux-amd64
+          chmod +x kind
+          sudo mv kind /usr/local/bin/kind
+
+          kubectl_version="$(curl -fsSL https://dl.k8s.io/release/stable.txt)"
+          curl -fsSL -o kubectl "https://dl.k8s.io/release/${kubectl_version}/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/kubectl
+
+          kind version
+          kubectl version --client=true
+
+      - name: Run Kind autosnapshot E2E
+        run: scripts/test-k8s-autosnap-kind.sh
