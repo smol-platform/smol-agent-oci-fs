@@ -268,7 +268,9 @@ GitHub Actions run the self-contained coverage on pull requests and `main`:
   and the Kind CSI autosnapshot E2E.
 - `Images` builds the operator and CSI images with Docker Buildx for
   `linux/amd64` and `linux/arm64`; it pushes to GHCR on `main`, `v*` tags, or
-  manual dispatch when image pushing is enabled.
+  manual dispatch when image pushing is enabled and a `GHCR_TOKEN` repository
+  secret with package write access is configured. Without that secret, the
+  workflow still builds both images and skips publishing.
 
 See [docs/kubernetes-operator.md](docs/kubernetes-operator.md) for the detailed
 operator design, install flow, image publishing, registry credentials, CRD

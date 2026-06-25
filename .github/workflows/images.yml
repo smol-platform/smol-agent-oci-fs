@@ -38,6 +38,7 @@ concurrency:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAMESPACE: ${{ github.repository_owner }}
+  HAS_GHCR_TOKEN: ${{ secrets.GHCR_TOKEN != '' }}
 
 jobs:
   build:
@@ -75,6 +76,10 @@ jobs:
           if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] && [ "${{ inputs.push_images }}" = "true" ]; then
             push=true
           fi
+          if [ "${push}" = "true" ] && [ "${HAS_GHCR_TOKEN}" != "true" ]; then
+            echo "::notice::GHCR_TOKEN is not configured; building images without pushing"
+            push=false
+          fi
           echo "push=${push}" >> "${GITHUB_OUTPUT}"
 
       - name: Log in to GHCR
@@ -83,7 +88,7 @@ jobs:
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          password: ${{ secrets.GHCR_TOKEN }}
 
       - name: Generate image metadata
         id: meta
