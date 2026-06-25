@@ -212,7 +212,7 @@ func buildOSIxBinary(t *testing.T) string {
 	}
 	binDir := t.TempDir()
 	bin := filepath.Join(binDir, "osix")
-	cmd := exec.Command("go", "build", "-o", bin, "./cmd/osix")
+	cmd := exec.Command("go", "build", "-buildvcs=false", "-o", bin, "./cmd/osix")
 	cmd.Dir = repoRoot
 	out, err := cmd.CombinedOutput()
 	if err != nil {
