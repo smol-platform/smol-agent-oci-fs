@@ -54,11 +54,18 @@ jobs:
           done < <(git ls-files 'scripts/*.sh')
 
       - name: Run Go test suite
-        run: go test ./...
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${RUNNER_OS}" = "Linux" ]; then
+            go test -skip 'FUSE|OverlayRuntimeIntegrationLinux|MountDiffAndSnapshotUsesMountedParent' ./...
+          else
+            go test ./...
+          fi
 
       - name: Run race detector
         if: runner.os == 'Linux'
-        run: go test -race ./...
+        run: go test -race -skip 'FUSE|OverlayRuntimeIntegrationLinux|MountDiffAndSnapshotUsesMountedParent' ./...
 
   hosted-registry-harness:
     name: Hosted registry harness smoke

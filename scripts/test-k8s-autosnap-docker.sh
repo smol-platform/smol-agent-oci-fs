@@ -58,8 +58,8 @@ for _ in $(seq 1 30); do
 done
 curl -fsS http://127.0.0.1:5000/v2/ >/dev/null
 
-go build -o /tmp/osix ./cmd/osix
-go build -o /tmp/osix-csi-node ./cmd/osix-csi-node
+go build -buildvcs=false -o /tmp/osix ./cmd/osix
+go build -buildvcs=false -o /tmp/osix-csi-node ./cmd/osix-csi-node
 
 tmp="$(mktemp -d /tmp/osix-k8s-autosnap.XXXXXX)"
 remote="127.0.0.1:5000/acme/autosnap-agent"

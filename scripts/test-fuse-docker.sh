@@ -19,5 +19,5 @@ docker run --rm \
     apt-get update >/dev/null
     apt-get install -y fuse-overlayfs >/dev/null
     fuse-overlayfs --version
-    go test -run "${TEST_PATTERN}" -count=1 -v ./internal/osix ./cmd/osix
+    go test -buildvcs=false -run "${TEST_PATTERN}" -count=1 -v ./internal/osix ./cmd/osix
   '

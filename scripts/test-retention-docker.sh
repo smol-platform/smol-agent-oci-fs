@@ -58,7 +58,7 @@ for _ in $(seq 1 30); do
 done
 curl -fsS http://127.0.0.1:5000/v2/ >/dev/null
 
-go build -o /tmp/osix ./cmd/osix
+go build -buildvcs=false -o /tmp/osix ./cmd/osix
 tmp="$(mktemp -d /tmp/osix-retention.XXXXXX)"
 remote="127.0.0.1:5000/acme/retention-agent"
 echo "tmp=${tmp}"
