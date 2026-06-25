@@ -141,7 +141,7 @@ func (s *CSIServer) NodeUnpublishVolume(ctx context.Context, req *csi.NodeUnpubl
 			Policy:     record.Policy,
 			VolumeID:   record.VolumeID,
 			TargetPath: record.TargetPath,
-		}, false); err != nil {
+		}, record.AutoSnapshot); err != nil {
 			return nil, err
 		}
 		return &csi.NodeUnpublishVolumeResponse{}, nil

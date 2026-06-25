@@ -9,6 +9,7 @@ import (
 	"time"
 
 	csi "github.com/container-storage-interface/spec/lib/go/csi"
+	"github.com/smol-platform/smol-agent-oci-fs/internal/osix"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -87,6 +88,59 @@ func TestServeCSIIdentityPublishAndUnpublish(t *testing.T) {
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatalf("ServeCSI exit = %v", err)
+	}
+}
+
+func TestNodeUnpublishFinalSnapshotsAutosnapshotVolume(t *testing.T) {
+	root := t.TempDir()
+	node := Node{WorkspaceRoot: filepath.Join(root, "workspaces")}
+	server := &CSIServer{Node: node}
+	target := filepath.Join(root, "target")
+	_, err := server.NodePublishVolume(context.Background(), &csi.NodePublishVolumeRequest{
+		VolumeId:   "pvc-final",
+		TargetPath: target,
+		VolumeContext: map[string]string{
+			"name":                "agent-final",
+			"namespace":           "default",
+			"baseImage":           "base",
+			"stateRef":            "local/agent-final",
+			"mountMode":           "materialized",
+			"autoSnapshot":        "true",
+			"maxDirtyBytes":       "1",
+			"pushDisabled":        "true",
+			"snapshotEvery":       "5s",
+			"compactEvery":        "1",
+			"squashEvery":         "2",
+			"checkpointTagPrefix": "checkpoint",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(target, "agent", "workspace"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "agent", "workspace", "final.txt"), []byte("survived unpublish\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err = server.NodeUnpublishVolume(context.Background(), &csi.NodeUnpublishVolumeRequest{VolumeId: "pvc-final", TargetPath: target})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := node.readMountRecord("pvc-final"); !os.IsNotExist(err) {
+		t.Fatalf("mount record should be removed after unpublish, err=%v", err)
+	}
+	workspace := filepath.Join(root, "workspaces", "pvc-final")
+	restore := filepath.Join(root, "restore")
+	if err := osix.Restore(workspace, "main", restore, osix.RestoreOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(restore, "agent", "workspace", "final.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "survived unpublish\n" {
+		t.Fatalf("restored final write = %q", data)
 	}
 }
 
