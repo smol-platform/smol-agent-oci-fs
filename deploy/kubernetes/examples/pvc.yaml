@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: demo-agent-state
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: osix-agent-state
+  resources:
+    requests:
+      storage: 1Gi
+  dataSourceRef:
+    apiGroup: agent.smol.ai
+    kind: AgentOCIFileSystem
+    name: demo-agent-state

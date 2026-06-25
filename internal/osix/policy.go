@@ -1,7 +1,6 @@
 package osix
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -50,35 +49,8 @@ func ValidateAgentState(root string, opts PolicyOptions) error {
 }
 
 func validateSideEffectLedger(root string) error {
-	path := filepath.Join(root, "agent", "side-effects", "ledger.jsonl")
-	file, err := os.Open(path)
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	scanner := bufio.NewScanner(file)
-	lineNo := 0
-	for scanner.Scan() {
-		lineNo++
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-		var entry SideEffectEntry
-		if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			return fmt.Errorf("side-effect ledger line %d: %w", lineNo, err)
-		}
-		if entry.Turn == 0 || entry.Tool == "" || entry.IdempotencyKey == "" || entry.RequestDigest == "" || entry.ResponseDigest == "" || entry.ExternalResource == "" || entry.ReplayPolicy == "" {
-			return fmt.Errorf("side-effect ledger line %d missing required fields", lineNo)
-		}
-		if !validReplayPolicy(entry.ReplayPolicy) {
-			return fmt.Errorf("side-effect ledger line %d has invalid replayPolicy %q", lineNo, entry.ReplayPolicy)
-		}
-	}
-	return scanner.Err()
+	_, err := readSideEffectLedger(root)
+	return err
 }
 
 func validReplayPolicy(policy string) bool {

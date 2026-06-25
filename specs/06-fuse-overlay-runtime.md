@@ -18,7 +18,7 @@ Define how the OSIx library becomes a real mounted filesystem runtime instead of
 - Live process checkpointing.
 - Distributed merge/conflict resolution.
 - Kernel snapshotter plugins for containerd.
-- Fully lazy encrypted chunk reads in the first implementation.
+- Arbitrary lazy restore for unencrypted layers; unencrypted restore may still fetch whole missing layers.
 - Supporting arbitrary host filesystem semantics beyond what OSIx can encode into OCI tar diff layers.
 
 ## Runtime Modes
@@ -166,6 +166,15 @@ type MountRuntime interface {
 ```
 
 The existing materialized implementation SHOULD become one implementation of this interface.
+The library also exposes a snapshot lower-store boundary for read-through
+runtime lowerdirs. A lower store resolves snapshot tree metadata from config
+blobs for lookup and directory enumeration, then delegates file and range reads
+to the lazy content path so remote blobs are fetched only when content is
+actually requested. Darwin FSKit and Linux native lazy FUSE can use this path
+for `--lazy` lower reads, including encrypted range reads when decrypt material
+is supplied to the mount. Linux native lazy FUSE also supports writable copy-up
+and whiteouts. Linux kernel overlay still needs additional backend work before
+it avoids local materialization.
 
 ## Snapshot Semantics
 
@@ -367,8 +376,13 @@ Acceptance criteria:
 
 ## Open Questions
 
-- First Linux implementation decision: use a minimal `fuse-overlayfs` platform adapter behind `MountRuntime`; keep the interface capable of hosting an in-process Go FUSE backend later.
+- First Linux implementation decision: use a minimal `fuse-overlayfs` platform adapter for non-lazy FUSE mounts, plus a native Go FUSE lower-store backend for lazy FUSE mounts.
 - macOS implementation decision: use a native FSKit app extension controlled by `osix-fskitctl`; macFUSE is superseded.
 - Full FSKit host app and File System app extension implementation remains open.
-- Lazy remote reads are deferred to a future chunked lower-store abstraction.
+- Linux kernel overlay still materializes local lowerdirs. Darwin FSKit and
+  Linux native lazy FUSE have initial `--lazy` lower read-through support for
+  unencrypted and decryptable encrypted reads; Linux lazy FUSE also supports
+  writable copy-up and whiteouts. Encrypted lazy restore can materialize from
+  encrypted lazy blobs when indexes are present; unencrypted lazy restore and
+  kernel overlay lowerdir preparation still fetch whole lower layers.
 - How strongly to normalize xattrs and platform-specific metadata across Linux and macOS.

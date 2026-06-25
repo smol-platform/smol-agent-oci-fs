@@ -211,3 +211,33 @@ Acceptance criteria:
 - At least one registry works in `hybrid` mode.
 - At least one registry works in `image` fallback mode.
 - Known limitations are documented, including tag atomicity and encrypted lazy reads.
+
+## M11: Kubernetes Operator And CSI Runtime
+
+Outcome: OSIx can be installed on a Kubernetes cluster and used as a persistent,
+snapshotting, registry-backed agent filesystem through a CSI volume.
+
+Deliverables:
+
+- Kubernetes CRDs for agent filesystems, snapshot policies, snapshots, and
+  runtime classes.
+- Operator deployment, RBAC, install manifests, and status/event conventions.
+- CSI node driver that prepares OSIx workspaces and mounts agent state into pods.
+- Snapshot/retention controller that invokes OSIx watch, push, compact, and
+  prune behavior according to policy.
+- Registry credential, encryption, signing, mount-mode, and retention plumbing.
+- Observability through status conditions, logs, health checks, and metrics.
+- Kind/local-registry integration test for install, mount, snapshot, checkpoint,
+  restore, and teardown flows.
+
+Acceptance criteria:
+
+- Applying the install manifests deploys the operator and CSI node driver.
+- A pod can mount an OSIx-backed PVC through the CSI driver.
+- File changes written by a pod are snapshotted and pushed to an OCI registry.
+- A second pod can restore or mount from the pushed branch or digest.
+- Retention creates checkpoint snapshots and prunes according to policy.
+- Failures surface through CRD status conditions and Kubernetes events.
+- Integration tests pass against a local Kubernetes cluster and local OCI
+  registry, or a deterministic fake cluster harness that exercises the same
+  operator/CSI command plans.

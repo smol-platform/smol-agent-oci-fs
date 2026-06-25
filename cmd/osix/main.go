@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/smol-platform/smol-agent-oci-fs/internal/osix"
 )
@@ -15,10 +17,12 @@ const usage = `osix is a local prototype for OCI Agent State Images.
 
 Usage:
   osix init BASE --name NAME --state REF --mount DIR [--encrypt RECIPIENTS]
-  osix snapshot DIR [--message MSG] [--tag TAG] [--also-tag TAG] [--expected-parent DIGEST] [--encrypt RECIPIENTS] [--sign KEY|keyless] [--attest TYPE]
-  osix push REF [REGISTRY/REPO] [--tag TAG]
-  osix pull REGISTRY/REPO:TAG [--tag LOCAL_TAG]
-  osix restore REF DIR [--force] [--decrypt IDENTITIES]
+  osix snapshot DIR [--message MSG] [--tag TAG] [--also-tag TAG] [--expected-parent DIGEST] [--encrypt RECIPIENTS] [--sign KEY|keyless|sigstore-keyless] [--attest TYPE]
+  osix push REF [REGISTRY/REPO] [--tag TAG] [--expected-parent DIGEST]
+  osix registry probe REGISTRY/REPO [--tag TAG] [--json]
+  osix pull REGISTRY/REPO:TAG [--tag LOCAL_TAG] [--lazy]
+  osix read REF PATH [--decrypt IDENTITIES] [--offset N --length N]
+  osix restore REF DIR [--force] [--decrypt IDENTITIES] [--trusted-key PUBKEY] [--certificate-identity ID --certificate-oidc-issuer ISSUER]
   osix mount REF DIR [--mode auto|overlay|fuse|materialized] [--rw] [--branch BRANCH] [--force] [--decrypt IDENTITIES] [--cache DIR] [--lazy]
   osix mount status DIR
   osix mount recover DIR
@@ -26,10 +30,12 @@ Usage:
   osix diff REF_A REF_B
   osix diff MOUNT_DIR
   osix fork SOURCE_REF TARGET_TAG
-  osix verify REF [--trusted-key PUBKEY]
+  osix verify REF [--trusted-key PUBKEY] [--certificate-identity ID --certificate-oidc-issuer ISSUER]
   osix validate REF
-  osix watch DIR [--once] [--every DURATION] [--max-dirty BYTES] [--on-turn-boundary] [--push]
-  osix compact REF [--dry-run] [--squash-every N] [--keep-snapshots A,B] [--preserve-signed]
+  osix watch DIR [--once] [--every DURATION] [--max-dirty BYTES] [--on-turn-boundary] [--push] [--compact-every N] [--squash-every N] [--prune-local] [--prune-remote]
+  osix watch start/status/stop/list/restart
+  osix compact REF [--dry-run] [--squash-every N] [--keep-snapshots A,B] [--preserve-signed] [--prune-local]
+  osix side-effect check DIR --tool TOOL --resource RESOURCE [--operation read|write] [--idempotency-key KEY]
   osix run MOUNT_DIR -- COMMAND [ARG...]
   osix show REF
   osix refs
@@ -41,8 +47,15 @@ such as localhost:5000/acme/agent-state:snap-000001.
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintf(os.Stderr, "osix: %v\n", err)
-		os.Exit(1)
+		os.Exit(exitCode(err))
 	}
+}
+
+func exitCode(err error) int {
+	if osix.IsRemoteBranchConflict(err) {
+		return 3
+	}
+	return 1
 }
 
 func run(args []string) error {
@@ -54,12 +67,18 @@ func run(args []string) error {
 	switch args[0] {
 	case "init":
 		return runInit(args[1:])
+	case "__fuse-lazy-server":
+		return runFuseLazyServer(args[1:])
 	case "snapshot":
 		return runSnapshot(args[1:])
 	case "push":
 		return runPush(args[1:])
+	case "registry":
+		return runRegistry(args[1:])
 	case "pull":
 		return runPull(args[1:])
+	case "read":
+		return runRead(args[1:])
 	case "restore":
 		return runRestore(args[1:], false)
 	case "mount":
@@ -78,6 +97,8 @@ func run(args []string) error {
 		return runWatch(args[1:])
 	case "compact":
 		return runCompact(args[1:])
+	case "side-effect":
+		return runSideEffect(args[1:])
 	case "run":
 		return runCommand(args[1:])
 	case "show":
@@ -87,6 +108,44 @@ func run(args []string) error {
 	default:
 		return fmt.Errorf("unknown command %q\n\n%s", args[0], usage)
 	}
+}
+
+func runRegistry(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: osix registry probe REGISTRY/REPO [--tag TAG] [--json]")
+	}
+	switch args[0] {
+	case "probe":
+		return runRegistryProbe(args[1:])
+	default:
+		return fmt.Errorf("unknown registry command %q", args[0])
+	}
+}
+
+func runRegistryProbe(args []string) error {
+	fs := flag.NewFlagSet("registry probe", flag.ContinueOnError)
+	tag := fs.String("tag", "", "probe tag to publish")
+	jsonOut := fs.Bool("json", false, "print machine-readable JSON")
+	fs.SetOutput(os.Stderr)
+	if err := parseInterspersed(fs, args, map[string]bool{"json": true}); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: osix registry probe REGISTRY/REPO [--tag TAG] [--json]")
+	}
+	result, err := osix.ProbeRegistryAccess(fs.Arg(0), osix.RegistryProbeOptions{Tag: *tag})
+	if err != nil {
+		return err
+	}
+	if *jsonOut {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(result)
+	}
+	fmt.Printf("registry probe passed for %s:%s\n", result.Repository, result.Tag)
+	fmt.Printf("manifest %s\n", result.ManifestDigest)
+	fmt.Printf("layer %s\n", result.LayerDigest)
+	return nil
 }
 
 type repeatedStrings []string
@@ -144,12 +203,13 @@ func runPush(args []string) error {
 	fs := flag.NewFlagSet("push", flag.ContinueOnError)
 	var tags repeatedStrings
 	fs.Var(&tags, "tag", "remote tag to publish for the selected snapshot; may be repeated")
+	expectedParent := fs.String("expected-parent", "", "expected current remote digest before mutable tag updates")
 	fs.SetOutput(os.Stderr)
 	if err := parseInterspersed(fs, args, nil); err != nil {
 		return err
 	}
 	if fs.NArg() < 1 || fs.NArg() > 2 {
-		return fmt.Errorf("usage: osix push REF [REGISTRY/REPO] [--tag TAG]")
+		return fmt.Errorf("usage: osix push REF [REGISTRY/REPO] [--tag TAG] [--expected-parent DIGEST]")
 	}
 	ref := fs.Arg(0)
 	remoteRepo := ""
@@ -165,7 +225,7 @@ func runPush(args []string) error {
 	if !strings.HasPrefix(ref, "sha256:") && !containsString(tags, ref) {
 		tags = append(tags, ref)
 	}
-	if err := osix.PushSnapshot(".", remoteRepo, ref, tags); err != nil {
+	if err := osix.PushSnapshotWithOptions(".", remoteRepo, ref, tags, osix.PushOptions{ExpectedParent: *expectedParent}); err != nil {
 		return err
 	}
 	fmt.Printf("pushed %s to %s\n", ref, remoteRepo)
@@ -178,12 +238,13 @@ func runPush(args []string) error {
 func runPull(args []string) error {
 	fs := flag.NewFlagSet("pull", flag.ContinueOnError)
 	localTag := fs.String("tag", "", "local tag to write for the pulled snapshot")
+	lazy := fs.Bool("lazy", false, "fetch manifests/configs now and layers on demand")
 	fs.SetOutput(os.Stderr)
-	if err := parseInterspersed(fs, args, nil); err != nil {
+	if err := parseInterspersed(fs, args, map[string]bool{"lazy": true}); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
-		return fmt.Errorf("usage: osix pull REGISTRY/REPO:TAG [--tag LOCAL_TAG]")
+		return fmt.Errorf("usage: osix pull REGISTRY/REPO:TAG [--tag LOCAL_TAG] [--lazy]")
 	}
 	remoteRef := fs.Arg(0)
 	if *localTag == "" {
@@ -195,7 +256,7 @@ func runPull(args []string) error {
 			*localTag = parsed.Reference
 		}
 	}
-	digest, err := osix.PullSnapshot(".", remoteRef, *localTag)
+	digest, err := osix.PullSnapshotWithOptions(".", remoteRef, *localTag, osix.PullOptions{Lazy: *lazy})
 	if err != nil {
 		return err
 	}
@@ -206,19 +267,54 @@ func runPull(args []string) error {
 	return nil
 }
 
+func runRead(args []string) error {
+	fs := flag.NewFlagSet("read", flag.ContinueOnError)
+	decrypt := fs.String("decrypt", "", "decrypt identities or KMS recipients, comma-separated")
+	offset := fs.Int64("offset", 0, "start byte offset for a range read")
+	length := fs.Int64("length", -1, "number of bytes to read; enables range reads when set")
+	fs.SetOutput(os.Stderr)
+	if err := parseInterspersed(fs, args, nil); err != nil {
+		return err
+	}
+	if fs.NArg() != 2 {
+		return fmt.Errorf("usage: osix read REF PATH [--decrypt IDENTITIES] [--offset N --length N]")
+	}
+	if *offset < 0 {
+		return fmt.Errorf("--offset must be non-negative")
+	}
+	if *length < 0 && *offset != 0 {
+		return fmt.Errorf("--length is required when --offset is set")
+	}
+	var data []byte
+	var err error
+	if *length >= 0 {
+		data, err = osix.ReadSnapshotFileRange(".", fs.Arg(0), fs.Arg(1), *offset, *length, osix.ReadFileOptions{Decrypt: *decrypt})
+	} else {
+		data, err = osix.ReadSnapshotFile(".", fs.Arg(0), fs.Arg(1), osix.ReadFileOptions{Decrypt: *decrypt})
+	}
+	if err != nil {
+		return err
+	}
+	_, err = os.Stdout.Write(data)
+	return err
+}
+
 func runSnapshot(args []string) error {
 	fs := flag.NewFlagSet("snapshot", flag.ContinueOnError)
 	msg := fs.String("message", "", "snapshot message")
 	tag := fs.String("tag", "", "tag to write")
 	alsoTag := fs.String("also-tag", "", "additional tag to write")
 	encrypt := fs.String("encrypt", "", "encryption recipients, comma-separated")
-	sign := fs.String("sign", "", "sign manifest digest with key path or keyless")
+	sign := fs.String("sign", "", "sign manifest digest with key path, keyless, or sigstore-keyless")
 	attest := fs.String("attest", "", "provenance attestation label")
+	sigstoreSign := addSigstoreSigningFlags(fs)
 	expectedParent := fs.String("expected-parent", "", "expected current digest for mutable tag updates")
 	secretScan := fs.String("secret-scan", "warn", "secret scan mode: block, warn, or off")
 	push := fs.Bool("push", false, "push snapshot to workspace state registry repo")
 	fs.SetOutput(os.Stderr)
-	if err := parseInterspersed(fs, args, map[string]bool{"push": true}); err != nil {
+	boolFlags := sigstoreSigningBoolFlags()
+	boolFlags["push"] = true
+	if err := parseInterspersed(fs, args, boolFlags); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
@@ -231,6 +327,7 @@ func runSnapshot(args []string) error {
 		Encrypt:        *encrypt,
 		Sign:           *sign,
 		Attest:         *attest,
+		Sigstore:       sigstoreSign,
 		ExpectedParent: *expectedParent,
 		SecretScan:     *secretScan,
 	})
@@ -242,7 +339,7 @@ func runSnapshot(args []string) error {
 		if err != nil {
 			return err
 		}
-		if err := osix.PushSnapshot(".", cfg.StateRef, result.ManifestDigest, result.Tags); err != nil {
+		if err := osix.PushSnapshotWithOptions(".", cfg.StateRef, result.ManifestDigest, result.Tags, osix.PushOptions{ExpectedParent: *expectedParent}); err != nil {
 			return err
 		}
 	}
@@ -269,13 +366,40 @@ func containsString(values []string, value string) bool {
 	return false
 }
 
+func addSigstoreSigningFlags(fs *flag.FlagSet) osix.SigstoreSignOptions {
+	var opts osix.SigstoreSignOptions
+	fs.StringVar(&opts.IdentityToken, "sigstore-identity-token", "", "OIDC identity token for sigstore-keyless signing")
+	fs.StringVar(&opts.IdentityTokenFile, "sigstore-identity-token-file", "", "file containing OIDC identity token for sigstore-keyless signing")
+	fs.StringVar(&opts.TrustedRoot, "sigstore-trusted-root", "", "Sigstore trusted_root.json path")
+	fs.StringVar(&opts.SigningConfig, "sigstore-signing-config", "", "Sigstore signing_config.json path")
+	fs.StringVar(&opts.TUFCache, "sigstore-tuf-cache", "", "Sigstore TUF cache directory")
+	fs.StringVar(&opts.TUFURL, "sigstore-tuf-url", "", "Sigstore TUF repository URL")
+	fs.BoolVar(&opts.TUFStaging, "sigstore-tuf-staging", false, "use Sigstore staging TUF root and repository")
+	fs.StringVar(&opts.FulcioURL, "sigstore-fulcio-url", "", "Fulcio base URL for sigstore-keyless signing")
+	fs.StringVar(&opts.RekorURL, "sigstore-rekor-url", "", "Rekor base URL for sigstore-keyless signing")
+	fs.StringVar(&opts.TimestampURL, "sigstore-timestamp-url", "", "timestamp authority URL for sigstore-keyless signing")
+	fs.BoolVar(&opts.NoRekor, "sigstore-no-rekor", false, "do not request a Rekor transparency-log entry during sigstore-keyless signing")
+	fs.BoolVar(&opts.NoTimestamp, "sigstore-no-timestamp", false, "do not request an RFC3161 timestamp during sigstore-keyless signing")
+	return opts
+}
+
+func sigstoreSigningBoolFlags() map[string]bool {
+	return map[string]bool{
+		"sigstore-tuf-staging":  true,
+		"sigstore-no-rekor":     true,
+		"sigstore-no-timestamp": true,
+	}
+}
+
 func runRestore(args []string, mountAlias bool) error {
 	fs := flag.NewFlagSet("restore", flag.ContinueOnError)
 	force := fs.Bool("force", false, "overwrite an existing non-empty target")
 	decrypt := fs.String("decrypt", "", "decrypt identities or KMS recipients, comma-separated")
-	trustedKey := fs.String("trusted-key", "", "verify snapshot with trusted key before restore")
+	verifyOpts := addVerifyFlags(fs)
 	fs.SetOutput(os.Stderr)
-	if err := parseInterspersed(fs, args, map[string]bool{"force": true}); err != nil {
+	boolFlags := verifyBoolFlags()
+	boolFlags["force"] = true
+	if err := parseInterspersed(fs, args, boolFlags); err != nil {
 		return err
 	}
 	if fs.NArg() != 2 {
@@ -289,8 +413,8 @@ func runRestore(args []string, mountAlias bool) error {
 		}
 		ref = digest
 	}
-	if *trustedKey != "" {
-		if _, err := osix.VerifySnapshot(".", ref, osix.VerifyOptions{TrustedKey: *trustedKey}); err != nil {
+	if verifyRequested(verifyOpts) {
+		if _, err := osix.VerifySnapshot(".", ref, verifyOpts); err != nil {
 			return err
 		}
 	}
@@ -328,20 +452,21 @@ func runMount(args []string) error {
 	}
 	ref := fs.Arg(0)
 	if osix.IsRegistryReference(ref) {
-		digest, err := osix.PullSnapshot(".", ref, "")
+		digest, err := osix.PullSnapshotWithOptions(".", ref, "", osix.PullOptions{Lazy: *lazy})
 		if err != nil {
 			return err
 		}
 		ref = digest
 	}
 	info, err := osix.Mount(".", ref, fs.Arg(1), osix.MountOptions{
-		Force:   *force,
-		RW:      *rw,
-		Branch:  *branch,
-		Decrypt: *decrypt,
-		Mode:    osix.MountMode(*mode),
-		Cache:   *cache,
-		Lazy:    *lazy,
+		Force:    *force,
+		RW:       *rw,
+		ReadOnly: !*rw,
+		Branch:   *branch,
+		Decrypt:  *decrypt,
+		Mode:     osix.MountMode(*mode),
+		Cache:    *cache,
+		Lazy:     *lazy,
 	})
 	if err != nil {
 		return err
@@ -351,6 +476,24 @@ func runMount(args []string) error {
 		printMountInfo(info)
 	}
 	return nil
+}
+
+func runFuseLazyServer(args []string) error {
+	fs := flag.NewFlagSet("__fuse-lazy-server", flag.ContinueOnError)
+	workspaceRoot := fs.String("workspace-root", ".", "workspace root")
+	sourceRef := fs.String("source-ref", "", "snapshot reference")
+	target := fs.String("target", "", "mount target")
+	upper := fs.String("upper", "", "upperdir for writable lazy FUSE state")
+	readOnly := fs.Bool("read-only", false, "mount the lazy FUSE server read-only")
+	decrypt := fs.String("decrypt", "", "decrypt identities or KMS recipients, comma-separated")
+	fs.SetOutput(os.Stderr)
+	if err := parseInterspersed(fs, args, map[string]bool{"read-only": true}); err != nil {
+		return err
+	}
+	if *sourceRef == "" || *target == "" || *upper == "" {
+		return fmt.Errorf("usage: osix __fuse-lazy-server --workspace-root DIR --source-ref REF --target DIR --upper DIR [--read-only] [--decrypt IDENTITIES]")
+	}
+	return osix.RunLazyFUSEServer(context.Background(), *workspaceRoot, *sourceRef, *target, *upper, *readOnly, osix.ReadFileOptions{Decrypt: *decrypt})
 }
 
 func runMountStatus(args []string) error {
@@ -447,15 +590,15 @@ func runFork(args []string) error {
 
 func runVerify(args []string) error {
 	fs := flag.NewFlagSet("verify", flag.ContinueOnError)
-	trustedKey := fs.String("trusted-key", "", "trusted ed25519 public key file")
+	verifyOpts := addVerifyFlags(fs)
 	fs.SetOutput(os.Stderr)
-	if err := parseInterspersed(fs, args, nil); err != nil {
+	if err := parseInterspersed(fs, args, verifyBoolFlags()); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
 		return fmt.Errorf("usage: osix verify REF [--trusted-key PUBKEY]")
 	}
-	result, err := osix.VerifySnapshot(".", fs.Arg(0), osix.VerifyOptions{TrustedKey: *trustedKey})
+	result, err := osix.VerifySnapshot(".", fs.Arg(0), verifyOpts)
 	if err != nil {
 		return err
 	}
@@ -466,6 +609,47 @@ func runVerify(args []string) error {
 	}
 	fmt.Printf("signer %s\n", result.Signer)
 	return nil
+}
+
+func addVerifyFlags(fs *flag.FlagSet) osix.VerifyOptions {
+	var opts osix.VerifyOptions
+	fs.StringVar(&opts.TrustedKey, "trusted-key", "", "trusted ed25519 base64 or ECDSA P-256 PEM public key file")
+	fs.StringVar(&opts.CertificateIdentity, "certificate-identity", "", "expected Sigstore certificate subject alternative name")
+	fs.StringVar(&opts.CertificateIdentityRegexp, "certificate-identity-regexp", "", "expected Sigstore certificate subject alternative name regexp")
+	fs.StringVar(&opts.CertificateOIDCIssuer, "certificate-oidc-issuer", "", "expected Sigstore OIDC issuer")
+	fs.StringVar(&opts.CertificateOIDCIssuerRegexp, "certificate-oidc-issuer-regexp", "", "expected Sigstore OIDC issuer regexp")
+	fs.StringVar(&opts.SigstoreTrustedRoot, "sigstore-trusted-root", "", "Sigstore trusted_root.json path")
+	fs.StringVar(&opts.SigstoreTUFCache, "sigstore-tuf-cache", "", "Sigstore TUF cache directory")
+	fs.StringVar(&opts.SigstoreTUFURL, "sigstore-tuf-url", "", "Sigstore TUF repository URL")
+	fs.BoolVar(&opts.SigstoreTUFStaging, "sigstore-tuf-staging", false, "use Sigstore staging TUF root and repository")
+	fs.BoolVar(&opts.SigstoreIgnoreTlog, "sigstore-ignore-tlog", false, "do not require Rekor transparency log inclusion")
+	fs.BoolVar(&opts.SigstoreIgnoreTimestamp, "sigstore-ignore-timestamp", false, "use current time instead of requiring observer timestamp material")
+	fs.BoolVar(&opts.SigstoreIgnoreCertificateSCT, "sigstore-ignore-certificate-sct", false, "do not require Fulcio certificate SCT verification")
+	return opts
+}
+
+func verifyRequested(opts osix.VerifyOptions) bool {
+	return opts.TrustedKey != "" ||
+		opts.CertificateIdentity != "" ||
+		opts.CertificateIdentityRegexp != "" ||
+		opts.CertificateOIDCIssuer != "" ||
+		opts.CertificateOIDCIssuerRegexp != "" ||
+		opts.SigstoreTrustedRoot != "" ||
+		opts.SigstoreTUFCache != "" ||
+		opts.SigstoreTUFURL != "" ||
+		opts.SigstoreTUFStaging ||
+		opts.SigstoreIgnoreTlog ||
+		opts.SigstoreIgnoreTimestamp ||
+		opts.SigstoreIgnoreCertificateSCT
+}
+
+func verifyBoolFlags() map[string]bool {
+	return map[string]bool{
+		"sigstore-tuf-staging":            true,
+		"sigstore-ignore-tlog":            true,
+		"sigstore-ignore-timestamp":       true,
+		"sigstore-ignore-certificate-sct": true,
+	}
 }
 
 func runValidate(args []string) error {
@@ -480,6 +664,22 @@ func runValidate(args []string) error {
 }
 
 func runWatch(args []string) error {
+	if len(args) > 0 {
+		switch args[0] {
+		case "start":
+			return runWatchStart(args[1:])
+		case "status":
+			return runWatchStatus(args[1:])
+		case "stop":
+			return runWatchStop(args[1:])
+		case "list":
+			return runWatchList(args[1:])
+		case "restart":
+			return runWatchRestart(args[1:])
+		case "run-daemon":
+			return runWatchDaemon(args[1:])
+		}
+	}
 	fs := flag.NewFlagSet("watch", flag.ContinueOnError)
 	every := fs.Duration("every", 0, "snapshot interval")
 	maxDirty := fs.String("max-dirty", "0", "dirty byte threshold, supports KiB/MiB/GiB")
@@ -488,23 +688,26 @@ func runWatch(args []string) error {
 	encrypt := fs.String("encrypt", "", "encryption recipients")
 	once := fs.Bool("once", false, "run one watch iteration")
 	iterations := fs.Int("iterations", 0, "bounded iteration count")
+	retentionFlags := addWatchRetentionFlags(fs)
 	fs.SetOutput(os.Stderr)
-	if err := parseInterspersed(fs, args, map[string]bool{"on-turn-boundary": true, "push": true, "once": true}); err != nil {
+	if err := parseInterspersed(fs, args, watchBoolFlags("once")); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
-		return fmt.Errorf("usage: osix watch DIR [--once] [--every DURATION] [--max-dirty BYTES] [--on-turn-boundary] [--push]")
+		return fmt.Errorf("usage: osix watch DIR [--once] [--every DURATION] [--max-dirty BYTES] [--on-turn-boundary] [--push] [--compact-every N] [--squash-every N] [--prune-local] [--prune-remote]")
 	}
 	maxDirtyBytes, err := parseBytes(*maxDirty)
 	if err != nil {
 		return err
 	}
+	retention := retentionPolicyFromFlags(retentionFlags)
 	result, err := osix.Watch(".", fs.Arg(0), osix.WatchOptions{
 		Every:          *every,
 		MaxDirtyBytes:  maxDirtyBytes,
 		OnTurnBoundary: *onTurnBoundary,
 		Push:           *push,
 		Encrypt:        *encrypt,
+		Retention:      retention,
 		Once:           *once,
 		Iterations:     *iterations,
 	})
@@ -514,7 +717,185 @@ func runWatch(args []string) error {
 	for _, snap := range result.Snapshots {
 		fmt.Printf("snapshot %s\n", snap.ManifestDigest)
 	}
+	for _, plan := range result.Compactions {
+		printCompactPlan(plan)
+	}
 	fmt.Printf("watch state %s\n", result.StatePath)
+	return nil
+}
+
+func runWatchStart(args []string) error {
+	fs := flag.NewFlagSet("watch start", flag.ContinueOnError)
+	every := fs.Duration("every", time.Minute, "snapshot interval")
+	maxDirty := fs.String("max-dirty", "0", "dirty byte threshold, supports KiB/MiB/GiB")
+	onTurnBoundary := fs.Bool("on-turn-boundary", false, "wait for turn-boundary hook file")
+	push := fs.Bool("push", false, "push snapshots after creation")
+	encrypt := fs.String("encrypt", "", "encryption recipients")
+	retentionFlags := addWatchRetentionFlags(fs)
+	fs.SetOutput(os.Stderr)
+	if err := parseInterspersed(fs, args, watchBoolFlags()); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: osix watch start DIR [--every DURATION] [--max-dirty BYTES] [--on-turn-boundary] [--push] [--compact-every N] [--squash-every N] [--prune-local] [--prune-remote]")
+	}
+	maxDirtyBytes, err := parseBytes(*maxDirty)
+	if err != nil {
+		return err
+	}
+	target := fs.Arg(0)
+	opts := osix.WatchOptions{Every: *every, MaxDirtyBytes: maxDirtyBytes, OnTurnBoundary: *onTurnBoundary, Push: *push, Encrypt: *encrypt, Retention: retentionPolicyFromFlags(retentionFlags)}
+	return startWatchDaemon(target, opts, every.String(), *maxDirty)
+}
+
+func startWatchDaemon(target string, opts osix.WatchOptions, everyArg, maxDirtyArg string) error {
+	record, err := osix.PrepareWatchDaemon(".", target, opts)
+	if err != nil {
+		return err
+	}
+	return startPreparedWatchDaemon(record, target, everyArg, maxDirtyArg)
+}
+
+func startPreparedWatchDaemon(record osix.WatchDaemonRecord, target, everyArg, maxDirtyArg string) error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	childArgs := []string{"watch", "run-daemon", target, "--every", everyArg, "--max-dirty", maxDirtyArg}
+	if record.OnTurnBoundary {
+		childArgs = append(childArgs, "--on-turn-boundary")
+	}
+	if record.Push {
+		childArgs = append(childArgs, "--push")
+	}
+	if record.Encrypt != "" {
+		childArgs = append(childArgs, "--encrypt", record.Encrypt)
+	}
+	childArgs = appendRetentionArgs(childArgs, record.Retention)
+	cmd := exec.Command(exe, childArgs...)
+	if cwd, err := os.Getwd(); err == nil {
+		cmd.Dir = cwd
+	}
+	logFile, err := os.OpenFile(record.LogPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	defer logFile.Close()
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	if err := osix.MarkWatchDaemonRunning(record, cmd.Process.Pid); err != nil {
+		return err
+	}
+	fmt.Printf("watch daemon %s pid %d\n", record.ID, cmd.Process.Pid)
+	fmt.Printf("watch state %s\n", record.StatePath)
+	fmt.Printf("watch log %s\n", record.LogPath)
+	return nil
+}
+
+func runWatchRestart(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("usage: osix watch restart DIR")
+	}
+	record, err := osix.PrepareWatchDaemonRestart(".", args[0])
+	if err != nil {
+		return err
+	}
+	return startPreparedWatchDaemon(record, args[0], record.Every.String(), fmt.Sprintf("%d", record.MaxDirtyBytes))
+}
+
+func runWatchDaemon(args []string) error {
+	fs := flag.NewFlagSet("watch run-daemon", flag.ContinueOnError)
+	every := fs.Duration("every", time.Minute, "snapshot interval")
+	maxDirty := fs.String("max-dirty", "0", "dirty byte threshold, supports KiB/MiB/GiB")
+	onTurnBoundary := fs.Bool("on-turn-boundary", false, "wait for turn-boundary hook file")
+	push := fs.Bool("push", false, "push snapshots after creation")
+	encrypt := fs.String("encrypt", "", "encryption recipients")
+	retentionFlags := addWatchRetentionFlags(fs)
+	fs.SetOutput(os.Stderr)
+	if err := parseInterspersed(fs, args, watchBoolFlags()); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: osix watch run-daemon DIR [--every DURATION] [--max-dirty BYTES] [--on-turn-boundary] [--push] [--compact-every N] [--squash-every N] [--prune-local] [--prune-remote]")
+	}
+	maxDirtyBytes, err := parseBytes(*maxDirty)
+	if err != nil {
+		return err
+	}
+	record, err := osix.WatchDaemonStatus(".", fs.Arg(0))
+	if err != nil {
+		return err
+	}
+	if err := osix.MarkWatchDaemonRunning(record, os.Getpid()); err != nil {
+		return err
+	}
+	opts := osix.WatchOptions{
+		Every:          *every,
+		MaxDirtyBytes:  maxDirtyBytes,
+		OnTurnBoundary: *onTurnBoundary,
+		Push:           *push,
+		Encrypt:        *encrypt,
+		Retention:      retentionPolicyFromFlags(retentionFlags),
+		UntilStopped:   true,
+		StopPath:       record.StopPath,
+	}
+	result, runErr := osix.Watch(".", fs.Arg(0), opts)
+	if err := osix.CompleteWatchDaemon(record, result, runErr); err != nil {
+		return err
+	}
+	return runErr
+}
+
+func runWatchStatus(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("usage: osix watch status DIR")
+	}
+	record, err := osix.WatchDaemonStatus(".", args[0])
+	if err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(record, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(data))
+	return nil
+}
+
+func runWatchList(args []string) error {
+	if len(args) != 0 {
+		return fmt.Errorf("usage: osix watch list")
+	}
+	records, err := osix.WatchDaemonList(".")
+	if err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(records, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(data))
+	return nil
+}
+
+func runWatchStop(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("usage: osix watch stop DIR")
+	}
+	record, err := osix.StopWatchDaemon(".", args[0])
+	if err != nil {
+		return err
+	}
+	if record.PID > 0 {
+		if process, err := os.FindProcess(record.PID); err == nil {
+			_ = process.Signal(os.Interrupt)
+		}
+	}
+	fmt.Printf("watch daemon %s stopping\n", record.ID)
+	fmt.Printf("stop file %s\n", record.StopPath)
 	return nil
 }
 
@@ -525,17 +906,30 @@ func runCompact(args []string) error {
 	keepSnapshots := fs.String("keep-snapshots", "", "comma-separated snapshots to preserve")
 	preserveSigned := fs.Bool("preserve-signed", false, "preserve signed snapshots")
 	checkpointTag := fs.String("tag", "", "checkpoint tag")
+	pruneLocal := fs.Bool("prune-local", false, "remove unretained local refs and blobs after checkpointing")
 	fs.SetOutput(os.Stderr)
-	if err := parseInterspersed(fs, args, map[string]bool{"dry-run": true, "preserve-signed": true}); err != nil {
+	if err := parseInterspersed(fs, args, map[string]bool{"dry-run": true, "preserve-signed": true, "prune-local": true}); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
 		return fmt.Errorf("usage: osix compact REF [--dry-run] [--squash-every N] [--keep-snapshots A,B] [--preserve-signed]")
 	}
-	plan, err := osix.Compact(".", fs.Arg(0), osix.ParseCompactPolicy(*squashEvery, *keepSnapshots, *preserveSigned, *dryRun, *checkpointTag))
+	plan, err := osix.Compact(".", fs.Arg(0), osix.CompactPolicy{
+		SquashEvery:    *squashEvery,
+		KeepSnapshots:  splitCSV(*keepSnapshots),
+		PreserveSigned: *preserveSigned,
+		DryRun:         *dryRun,
+		CheckpointTag:  *checkpointTag,
+		PruneLocal:     *pruneLocal,
+	})
 	if err != nil {
 		return err
 	}
+	printCompactPlan(plan)
+	return nil
+}
+
+func printCompactPlan(plan osix.CompactPlan) {
 	fmt.Printf("source %s\n", plan.SourceDigest)
 	fmt.Printf("chain %d\n", plan.ChainLength)
 	if plan.CreateCheckpoint {
@@ -551,7 +945,109 @@ func runCompact(args []string) error {
 	for _, candidate := range plan.DeleteCandidates {
 		fmt.Printf("delete-candidate %s\n", candidate)
 	}
-	return nil
+	for _, ref := range plan.PrunedRefs {
+		fmt.Printf("pruned-ref %s\n", ref)
+	}
+	for _, blob := range plan.PrunedBlobs {
+		fmt.Printf("pruned-blob %s\n", blob)
+	}
+	for _, digest := range plan.RemoteDeleteCandidates {
+		fmt.Printf("remote-delete-candidate %s\n", digest)
+	}
+	for _, digest := range plan.RemoteDeleted {
+		fmt.Printf("remote-deleted %s\n", digest)
+	}
+}
+
+type watchRetentionFlags struct {
+	compactEvery        *int
+	squashEvery         *int
+	checkpointTagPrefix *string
+	keepSnapshots       *string
+	preserveSigned      *bool
+	pruneLocal          *bool
+	pruneRemote         *bool
+	dryRun              *bool
+}
+
+func addWatchRetentionFlags(fs *flag.FlagSet) watchRetentionFlags {
+	return watchRetentionFlags{
+		compactEvery:        fs.Int("compact-every", 0, "run compaction every N watch snapshots; 0 disables retention compaction"),
+		squashEvery:         fs.Int("squash-every", 50, "minimum chain length before creating a checkpoint"),
+		checkpointTagPrefix: fs.String("checkpoint-tag-prefix", "checkpoint", "prefix for watch-created checkpoint tags"),
+		keepSnapshots:       fs.String("keep-snapshots", "", "comma-separated snapshots to preserve during retention pruning"),
+		preserveSigned:      fs.Bool("preserve-signed", false, "preserve signed snapshots during retention pruning"),
+		pruneLocal:          fs.Bool("prune-local", false, "remove unretained local refs and blobs after checkpointing"),
+		pruneRemote:         fs.Bool("prune-remote", false, "delete unretained remote manifests after pushing a checkpoint"),
+		dryRun:              fs.Bool("retention-dry-run", false, "plan retention compaction without creating checkpoints or pruning"),
+	}
+}
+
+func retentionPolicyFromFlags(flags watchRetentionFlags) osix.WatchRetentionPolicy {
+	return osix.WatchRetentionPolicy{
+		CompactEvery:        *flags.compactEvery,
+		SquashEvery:         *flags.squashEvery,
+		CheckpointTagPrefix: *flags.checkpointTagPrefix,
+		KeepSnapshots:       splitCSV(*flags.keepSnapshots),
+		PreserveSigned:      *flags.preserveSigned,
+		PruneLocal:          *flags.pruneLocal,
+		PruneRemote:         *flags.pruneRemote,
+		DryRun:              *flags.dryRun,
+	}
+}
+
+func watchBoolFlags(extra ...string) map[string]bool {
+	flags := map[string]bool{
+		"on-turn-boundary":  true,
+		"push":              true,
+		"preserve-signed":   true,
+		"prune-local":       true,
+		"prune-remote":      true,
+		"retention-dry-run": true,
+	}
+	for _, name := range extra {
+		flags[name] = true
+	}
+	return flags
+}
+
+func appendRetentionArgs(args []string, retention osix.WatchRetentionPolicy) []string {
+	if retention.CompactEvery > 0 {
+		args = append(args, "--compact-every", fmt.Sprintf("%d", retention.CompactEvery))
+	}
+	if retention.SquashEvery > 0 {
+		args = append(args, "--squash-every", fmt.Sprintf("%d", retention.SquashEvery))
+	}
+	if retention.CheckpointTagPrefix != "" {
+		args = append(args, "--checkpoint-tag-prefix", retention.CheckpointTagPrefix)
+	}
+	if len(retention.KeepSnapshots) > 0 {
+		args = append(args, "--keep-snapshots", strings.Join(retention.KeepSnapshots, ","))
+	}
+	if retention.PreserveSigned {
+		args = append(args, "--preserve-signed")
+	}
+	if retention.PruneLocal {
+		args = append(args, "--prune-local")
+	}
+	if retention.PruneRemote {
+		args = append(args, "--prune-remote")
+	}
+	if retention.DryRun {
+		args = append(args, "--retention-dry-run")
+	}
+	return args
+}
+
+func splitCSV(input string) []string {
+	var out []string
+	for _, item := range strings.Split(input, ",") {
+		item = strings.TrimSpace(item)
+		if item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
 }
 
 func runCommand(args []string) error {
@@ -564,6 +1060,53 @@ func runCommand(args []string) error {
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
 	return cmd.Run()
+}
+
+func runSideEffect(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: osix side-effect check DIR --tool TOOL --resource RESOURCE [--operation read|write] [--idempotency-key KEY]")
+	}
+	switch args[0] {
+	case "check":
+		return runSideEffectCheck(args[1:])
+	default:
+		return fmt.Errorf("unknown side-effect command %q", args[0])
+	}
+}
+
+func runSideEffectCheck(args []string) error {
+	fs := flag.NewFlagSet("side-effect check", flag.ContinueOnError)
+	tool := fs.String("tool", "", "external tool name")
+	resource := fs.String("resource", "", "external resource identifier")
+	operation := fs.String("operation", "write", "operation: read or write")
+	idempotencyKey := fs.String("idempotency-key", "", "idempotency key for idempotent retry checks")
+	fs.SetOutput(os.Stderr)
+	if err := parseInterspersed(fs, args, nil); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: osix side-effect check DIR --tool TOOL --resource RESOURCE [--operation read|write] [--idempotency-key KEY]")
+	}
+	decision, err := osix.CheckSideEffect(fs.Arg(0), osix.SideEffectCheck{
+		Tool:             *tool,
+		ExternalResource: *resource,
+		Operation:        *operation,
+		IdempotencyKey:   *idempotencyKey,
+	})
+	if err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(decision, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(data))
+	switch decision.Action {
+	case osix.SideEffectActionAllow, osix.SideEffectActionMock:
+		return nil
+	default:
+		return fmt.Errorf("side-effect action %s: %s", decision.Action, decision.Reason)
+	}
 }
 
 func runShow(args []string) error {

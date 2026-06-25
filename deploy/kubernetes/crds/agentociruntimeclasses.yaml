@@ -1,0 +1,41 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: agentociruntimeclasses.agent.smol.ai
+spec:
+  group: agent.smol.ai
+  scope: Cluster
+  names:
+    plural: agentociruntimeclasses
+    singular: agentociruntimeclass
+    kind: AgentOCIRuntimeClass
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                mountMode:
+                  type: string
+                cacheRoot:
+                  type: string
+                runtimeImage:
+                  type: string
+                privilegedOverlay:
+                  type: boolean
+                fuse:
+                  type: boolean
+                lazyFuse:
+                  type: boolean
+                nodeSelector:
+                  type: object
+                  additionalProperties:
+                    type: string
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true

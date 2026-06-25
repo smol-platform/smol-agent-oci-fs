@@ -1,0 +1,17 @@
+apiVersion: agent.smol.ai/v1alpha1
+kind: AgentOCISnapshotPolicy
+metadata:
+  name: frequent-checkpoint
+spec:
+  every: 30s
+  maxDirtyBytes: 1MiB
+  onTurnBoundary: true
+  push: true
+  compactEvery: 5
+  squashEvery: 10
+  checkpointTagPrefix: checkpoint
+  keepSnapshots:
+    - main
+  preserveSigned: true
+  pruneLocal: true
+  pruneRemote: false

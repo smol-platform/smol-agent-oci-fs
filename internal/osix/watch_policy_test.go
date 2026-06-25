@@ -40,6 +40,51 @@ func TestWatchCreatesSnapshotAndState(t *testing.T) {
 	}
 }
 
+func TestWatchRetentionCreatesCheckpointAndRecordsState(t *testing.T) {
+	root := t.TempDir()
+	if _, err := Init(root, InitOptions{Base: "base", Name: "agent", StateRef: "local/agent", Mount: filepath.Join(root, "fs"), DefaultBranch: "main"}); err != nil {
+		t.Fatal(err)
+	}
+	fs := filepath.Join(root, "fs")
+	mustWrite(t, filepath.Join(fs, "agent", "workspace", "file.txt"), "v1\n")
+	if _, err := Snapshot(root, fs, SnapshotOptions{Tag: "snap-000001", AlsoTag: "main"}); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(fs, "agent", "workspace", "file.txt"), "v2\n")
+	result, err := Watch(root, fs, WatchOptions{
+		Once:          true,
+		MaxDirtyBytes: 1,
+		Retention: WatchRetentionPolicy{
+			CompactEvery:        1,
+			SquashEvery:         2,
+			CheckpointTagPrefix: "checkpoint",
+			PruneLocal:          true,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Snapshots) != 1 || len(result.Compactions) != 1 {
+		t.Fatalf("unexpected watch retention result: %#v", result)
+	}
+	plan := result.Compactions[0]
+	if plan.CheckpointDigest == "" || plan.CheckpointTag != "checkpoint-000002" {
+		t.Fatalf("unexpected compaction plan: %#v", plan)
+	}
+	state, err := readWatchState(result.StatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.LastCompaction == nil || state.LastCompaction.CheckpointDigest != plan.CheckpointDigest {
+		t.Fatalf("watch state missing compaction: %#v", state)
+	}
+	restore := filepath.Join(root, "restore")
+	if err := Restore(root, "checkpoint-000002", restore, RestoreOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	assertFile(t, filepath.Join(restore, "agent", "workspace", "file.txt"), "v2\n")
+}
+
 func TestWatchTurnBoundaryHook(t *testing.T) {
 	root := t.TempDir()
 	if _, err := Init(root, InitOptions{Base: "base", Name: "agent", StateRef: "local/agent", Mount: filepath.Join(root, "fs"), DefaultBranch: "main"}); err != nil {

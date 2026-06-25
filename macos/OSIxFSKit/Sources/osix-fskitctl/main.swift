@@ -45,9 +45,12 @@ struct OSIxFSKitControl {
         case "mount":
             let opts = try parseOptions(args, allowed: [
                 "bundle-id",
+                "decrypt",
                 "fstype",
+                "lazy",
                 "lower",
                 "mode",
+                "osix-bin",
                 "source-digest",
                 "source-ref",
                 "target",
@@ -78,13 +81,19 @@ struct OSIxFSKitControl {
         let work = try required(opts, "work")
         let mode = opts["mode"] ?? "overlay"
         let rw = try readWriteOption(opts)
+        let lazy = try booleanOption(opts, "lazy", defaultValue: false)
+        let decrypt = opts["decrypt"]
+        let osixBin = opts["osix-bin"]
         try validateMountMode(mode)
         try validateSourceDigest(sourceDigest)
         try validateMountPaths(target: target, workspaceRoot: workspaceRoot, lower: lower, upper: upper, work: work)
+        if let osixBin, !osixBin.isEmpty {
+            try validateExecutable(path: osixBin, option: "--osix-bin")
+        }
         try await requireReady(bundleID: bundleID, fileSystemType: fsType)
 
         try FileManager.default.createDirectory(atPath: target, withIntermediateDirectories: true)
-        let mountOptions = [
+        var encodedMountOptions = [
             "osix.bundle=" + encode(bundleID),
             "osix.workspace=" + encode(workspaceRoot),
             "osix.source_ref=" + encode(sourceRef),
@@ -93,15 +102,27 @@ struct OSIxFSKitControl {
             "osix.upper=" + encode(upper),
             "osix.work=" + encode(work),
             "osix.mode=" + encode(mode),
-            "osix.rw=" + encode(rw ? "true" : "false")
-        ].joined(separator: ",")
+            "osix.rw=" + encode(rw ? "true" : "false"),
+            "osix.lazy=" + encode(lazy ? "true" : "false")
+        ]
+        if let osixBin, !osixBin.isEmpty {
+            encodedMountOptions.append("osix.osix_bin=" + encode(osixBin))
+        }
+        if let decrypt, !decrypt.isEmpty {
+            encodedMountOptions.append("osix.decrypt=" + encode(decrypt))
+        }
+        let mountOptions = encodedMountOptions.joined(separator: ",")
 
         try runProcess("/sbin/mount", ["-F", "-t", fsType, "-o", mountOptions, "osixfs", target])
     }
 
     static func readWriteOption(_ opts: [String: String]) throws -> Bool {
-        guard let rawValue = opts["rw"] else {
-            return true
+        try booleanOption(opts, "rw", defaultValue: true)
+    }
+
+    static func booleanOption(_ opts: [String: String], _ key: String, defaultValue: Bool) throws -> Bool {
+        guard let rawValue = opts[key] else {
+            return defaultValue
         }
         switch rawValue.lowercased() {
         case "", "true":
@@ -109,7 +130,7 @@ struct OSIxFSKitControl {
         case "false":
             return false
         default:
-            throw usage("--rw must be true or false")
+            throw usage("--\(key) must be true or false")
         }
     }
 
@@ -164,6 +185,19 @@ struct OSIxFSKitControl {
         }
         if rejectWorldWritable, statBuffer.st_mode & mode_t(S_IWOTH) != 0 {
             throw CLIError(message: "refusing world-writable runtime directory \(option) \(path)", code: 64)
+        }
+    }
+
+    static func validateExecutable(path: String, option: String) throws {
+        var statBuffer = stat()
+        guard lstat(path, &statBuffer) == 0 else {
+            throw CLIError(message: "\(option) \(path) is unavailable: \(String(cString: strerror(errno)))", code: 64)
+        }
+        guard statBuffer.st_mode & S_IFMT != S_IFDIR else {
+            throw CLIError(message: "\(option) \(path) is a directory", code: 64)
+        }
+        guard access(path, X_OK) == 0 else {
+            throw CLIError(message: "\(option) \(path) is not executable", code: 64)
         }
     }
 
@@ -342,7 +376,7 @@ struct OSIxFSKitControl {
 }
 
 func parseOptions(_ args: [String], allowed: Set<String>) throws -> [String: String] {
-    let booleanOptions = Set(["force", "rw"])
+    let booleanOptions = Set(["force", "lazy", "rw"])
     var opts: [String: String] = [:]
     var index = 0
     while index < args.count {
@@ -387,7 +421,7 @@ func optionOrEnvironment(_ opts: [String: String], _ key: String, envKey: String
 }
 
 func usage(_ message: String) -> CLIError {
-    CLIError(message: "\(message)\nusage: osix-fskitctl doctor --bundle-id BUNDLE_ID [--fstype TYPE]\n       osix-fskitctl mount --target PATH --lower PATH --upper PATH --work PATH --source-ref REF --source-digest DIGEST --workspace-root PATH [--mode overlay|fuse] [--rw] [--fstype TYPE]\n       osix-fskitctl unmount --target PATH [--force]", code: 64)
+    CLIError(message: "\(message)\nusage: osix-fskitctl doctor --bundle-id BUNDLE_ID [--fstype TYPE]\n       osix-fskitctl mount --target PATH --lower PATH --upper PATH --work PATH --source-ref REF --source-digest DIGEST --workspace-root PATH [--mode overlay|fuse] [--rw] [--lazy] [--decrypt IDENTITIES] [--osix-bin PATH] [--fstype TYPE]\n       osix-fskitctl unmount --target PATH [--force]", code: 64)
 }
 
 func environment(_ key: String, _ fallback: String) -> String {

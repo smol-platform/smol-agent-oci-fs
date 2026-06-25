@@ -1,0 +1,8 @@
+.git
+.beads
+.osix-tools
+dist
+hosted-registry-run-*
+*.env
+**/.DS_Store
+**/.osix

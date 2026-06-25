@@ -169,25 +169,46 @@ func normalizeMountMode(mode MountMode) MountMode {
 	return mode
 }
 
+var (
+	overlayAvailableAtCheck = overlayAvailableAt
+	fuseAvailableCheck      = fuseAvailable
+	lazyFuseAvailableCheck  = lazyFuseAvailable
+)
+
 func selectMountMode(workspaceRoot string, mode MountMode, opts MountOptions) (MountMode, error) {
 	switch mode {
 	case MountMaterialized:
 		return MountMaterialized, nil
 	case MountOverlay:
-		if err := overlayAvailableAt(workspaceRoot); err != nil {
+		if opts.Lazy {
+			return "", fmt.Errorf("lazy overlay mode is not supported; use --mode fuse for lazy Linux runtime mounts")
+		}
+		if err := overlayAvailableAtCheck(workspaceRoot); err != nil {
 			return "", err
 		}
 		return MountOverlay, nil
 	case MountFUSE:
-		if err := fuseAvailable(); err != nil {
+		if opts.Lazy {
+			if err := lazyFuseAvailableCheck(); err != nil {
+				return "", err
+			}
+			return MountFUSE, nil
+		}
+		if err := fuseAvailableCheck(); err != nil {
 			return "", err
 		}
 		return MountFUSE, nil
 	case MountAuto:
-		if err := overlayAvailableAt(workspaceRoot); err == nil {
+		if opts.Lazy {
+			if err := lazyFuseAvailableCheck(); err == nil {
+				return MountFUSE, nil
+			}
+			return MountMaterialized, nil
+		}
+		if err := overlayAvailableAtCheck(workspaceRoot); err == nil {
 			return MountOverlay, nil
 		}
-		if err := fuseAvailable(); err == nil {
+		if err := fuseAvailableCheck(); err == nil {
 			return MountFUSE, nil
 		}
 		return MountMaterialized, nil

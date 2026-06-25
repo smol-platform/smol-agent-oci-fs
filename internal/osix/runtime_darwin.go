@@ -135,7 +135,7 @@ func darwinFSKitMount(ctx context.Context, workspaceRoot, sourceRef, target stri
 	if err != nil {
 		return MountInfo{}, err
 	}
-	root, lower, upper, work, rootExisted, err := prepareKernelMountDirs(workspaceRoot, sourceRef, target, opts)
+	root, lower, upper, work, rootExisted, err := prepareKernelMountDirsWithRestore(workspaceRoot, sourceRef, target, opts, !opts.Lazy)
 	if err != nil {
 		return MountInfo{}, err
 	}
@@ -160,6 +160,15 @@ func darwinFSKitMount(ctx context.Context, workspaceRoot, sourceRef, target stri
 		"--upper", upper,
 		"--work", work,
 		"--mode", string(mode),
+	}
+	if opts.Lazy {
+		args = append(args, "--lazy")
+		if osixBin, err := os.Executable(); err == nil && strings.TrimSpace(osixBin) != "" {
+			args = append(args, "--osix-bin", osixBin)
+		}
+	}
+	if strings.TrimSpace(opts.Decrypt) != "" {
+		args = append(args, "--decrypt", opts.Decrypt)
 	}
 	if opts.ReadOnly {
 		args = append(args, "--rw", "false")

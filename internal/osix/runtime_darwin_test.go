@@ -189,6 +189,32 @@ func TestDarwinFSKitMountPassesAbsoluteTargetToHelper(t *testing.T) {
 	args = strings.Split(strings.TrimSpace(string(argsData)), "\n")
 	assertFlagValue(t, args, "--target", absPath(readOnlyTarget))
 	assertFlagValue(t, args, "--rw", "false")
+
+	lazyTarget := "lazy-mount"
+	decryptMaterial := filepath.Join(root, "identity.txt")
+	if err := os.WriteFile(decryptMaterial, []byte("identity\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = darwinFSKitMount(context.Background(), root, "snap-000001", lazyTarget, MountOptions{Force: true, RW: true, Mode: MountOverlay, Lazy: true, Decrypt: decryptMaterial}, MountOverlay)
+	if err == nil {
+		t.Fatalf("expected fake helper mount failure")
+	}
+	argsData, err = os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args = strings.Split(strings.TrimSpace(string(argsData)), "\n")
+	assertFlagValue(t, args, "--target", absPath(lazyTarget))
+	assertFlagPresent(t, args, "--lazy")
+	assertFlagValue(t, args, "--decrypt", decryptMaterial)
+	osixBin := flagValue(t, args, "--osix-bin")
+	if _, err := os.Stat(osixBin); err != nil {
+		t.Fatalf("--osix-bin %q unavailable: %v; args=%#v", osixBin, err, args)
+	}
+	lower := flagValue(t, args, "--lower")
+	if _, err := os.Stat(filepath.Join(lower, "agent", "workspace", "file.txt")); !os.IsNotExist(err) {
+		t.Fatalf("lazy FSKit mount should not restore lower file before helper mount, stat err=%v", err)
+	}
 }
 
 func TestDarwinFSKitUnmountUsesStoredTarget(t *testing.T) {
@@ -264,11 +290,27 @@ func TestDarwinFSKitUnmountUsesStoredTarget(t *testing.T) {
 
 func assertFlagValue(t *testing.T, args []string, flag, value string) {
 	t.Helper()
+	got := flagValue(t, args, flag)
+	if got != value {
+		t.Fatalf("helper %s = %q, want %q; args=%#v", flag, got, value, args)
+	}
+}
+
+func flagValue(t *testing.T, args []string, flag string) string {
+	t.Helper()
 	for i := 0; i+1 < len(args); i++ {
 		if args[i] == flag {
-			if args[i+1] != value {
-				t.Fatalf("helper %s = %q, want %q; args=%#v", flag, args[i+1], value, args)
-			}
+			return args[i+1]
+		}
+	}
+	t.Fatalf("helper args missing %s: %#v", flag, args)
+	return ""
+}
+
+func assertFlagPresent(t *testing.T, args []string, flag string) {
+	t.Helper()
+	for _, arg := range args {
+		if arg == flag {
 			return
 		}
 	}

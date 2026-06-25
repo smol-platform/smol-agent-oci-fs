@@ -1,0 +1,39 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: agentocisnapshots.agent.smol.ai
+spec:
+  group: agent.smol.ai
+  scope: Namespaced
+  names:
+    plural: agentocisnapshots
+    singular: agentocisnapshot
+    kind: AgentOCISnapshot
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                fileSystemName:
+                  type: string
+                fileSystemUID:
+                  type: string
+                snapshotDigest:
+                  type: string
+                parentDigest:
+                  type: string
+                branch:
+                  type: string
+                checkpointDigest:
+                  type: string
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
+      subresources:
+        status: {}

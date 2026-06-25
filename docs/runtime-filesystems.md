@@ -6,7 +6,7 @@ OSIx supports one runtime interface with three mount modes:
 | --- | --- | --- |
 | `auto` | all | Selects `overlay`, then `fuse`, then `materialized` based on prerequisites. |
 | `overlay` | Linux, macOS | Linux uses kernel overlayfs. macOS uses a native FSKit module for overlay-style semantics. |
-| `fuse` | Linux with `/dev/fuse`, macOS with FSKit | Linux uses `fuse-overlayfs`; macOS uses the same native FSKit module as the Darwin userspace filesystem path. |
+| `fuse` | Linux with `/dev/fuse`, macOS with FSKit | Linux uses `fuse-overlayfs`, except `--lazy` mounts use OSIx's native Go FUSE lower-store backend with writable copy-up; macOS uses the same native FSKit module as the Darwin userspace filesystem path. |
 | `materialized` | all | Restores a writable copy into the target and records mount metadata. |
 
 ## Commands
@@ -30,16 +30,17 @@ Run the FUSE integration test in a privileged Linux container with:
 ./scripts/test-fuse-docker.sh
 ```
 
-The script uses `golang:1.24-bookworm`, installs `fuse-overlayfs`, exposes `/dev/fuse`, and runs `TestFUSERuntimeIntegrationLinux`. Override the image with `OSIX_FUSE_DOCKER_IMAGE` or the test selector with `OSIX_FUSE_TEST_PATTERN`.
+The script uses `golang:1.24-bookworm`, installs `fuse-overlayfs`, exposes `/dev/fuse`, and runs the Linux FUSE integration tests. Coverage includes the writable `fuse-overlayfs` adapter, in-process native lazy read-only and writable backends, and CLI-level lazy remote mounts that build a real `osix` binary, start the hidden helper process, verify its PID through mount metadata, read and write through FUSE, snapshot/restore writable changes, and unmount the helper cleanly. Override the image with `OSIX_FUSE_DOCKER_IMAGE` or the test selector with `OSIX_FUSE_TEST_PATTERN`.
 
 ## Mode Selection
 
 `--mode auto` chooses the first available runtime:
 
-1. Linux kernel overlayfs when the process has mount privileges and `/proc/filesystems` lists `overlay`.
-2. macOS FSKit backend when `osix-fskitctl` is available and the OSIx File System app extension is installed and enabled.
-3. Linux `fuse-overlayfs` when the binary is on `PATH` and `/dev/fuse` exists.
-4. Materialized restore.
+1. Linux native lazy FUSE when `--lazy` is requested and `/dev/fuse` exists.
+2. Linux kernel overlayfs when the process has mount privileges, `/proc/filesystems` lists `overlay`, and `--lazy` is not requested.
+3. macOS FSKit backend when `osix-fskitctl` is available and the OSIx File System app extension is installed and enabled.
+4. Linux `fuse-overlayfs` when the binary is on `PATH` and `/dev/fuse` exists.
+5. Materialized restore.
 
 Explicit `--mode overlay` or `--mode fuse` fails with a prerequisite error instead of falling back.
 
@@ -78,7 +79,7 @@ Runtime lower, upper, and work directories are created with `0700`. Mount metada
 
 ## FUSE Adapter Decision
 
-The first Linux implementation uses `fuse-overlayfs` as the FUSE runtime adapter instead of embedding a Go FUSE server. The macOS path is native FSKit, not macFUSE.
+The default non-lazy Linux FUSE implementation uses `fuse-overlayfs`. `--lazy` Linux FUSE mounts use an embedded Go FUSE server backed by snapshot lower-store metadata, ranged lazy file reads, writable upperdir copy-up, and overlay whiteouts, so the lowerdir is not restored before mount. The macOS path is native FSKit, not macFUSE.
 
 ## macOS Setup
 
@@ -112,6 +113,11 @@ before running the build or install script:
 OSIX_FSKIT_CODESIGN_IDENTITY="Apple Development: Example Developer (TEAMID)" \
   ./scripts/install-macos-fskit-app.sh
 ```
+
+For capable-host validation, add `--require-team-signing` or set
+`OSIX_FSKIT_REQUIRE_TEAM_SIGNING=1`. This refuses ad-hoc signing and verifies
+that the helper, host app, and embedded extension carry an Apple
+`TeamIdentifier` before registration.
 
 The installer builds the helper and app, copies the app into `~/Applications`,
 registers the embedded extension with PlugInKit, elects it for the current user,
@@ -158,6 +164,20 @@ Run the local prerequisite and integration smoke harness with:
 ./scripts/test-macos-fskit.sh
 ```
 
+For machine-readable capable-host evidence, set:
+
+```sh
+OSIX_FSKIT_PREFLIGHT_REPORT=./fskit-preflight.json \
+OSIX_FSKIT_EVIDENCE_DIR=./fskit-evidence \
+  ./scripts/test-macos-fskit.sh
+```
+
+`OSIX_FSKIT_PREFLIGHT_REPORT` is written before live mounted tests run and
+records FSKit doctor status, helper/app/extension signing summaries, bundle id,
+filesystem type, and whether the host is blocked or ready. On a passing capable
+host, `OSIX_FSKIT_EVIDENCE_DIR` receives a timestamped JSON file with
+`result: passed`.
+
 The helper checks installed FSKit modules through `FSClient`, verifies the
 enabled extension declares the requested filesystem type, and invokes Darwin
 `mount -F`. When the extension is unavailable or not enabled, explicit `--mode
@@ -170,5 +190,5 @@ macOS behavior can differ from Linux overlayfs for case sensitivity, ownership, 
 
 - Overlay mode requires Linux mount privileges.
 - macOS overlay mode requires a signed and enabled FSKit app extension; it is not Linux kernel overlayfs.
-- Lazy remote reads are not implemented. Lowerdirs are restored locally before overlay/FUSE mount.
+- Lazy single-file remote reads are available through `osix pull --lazy` and `osix read`. Age-only, legacy KMS, and OSIx-envelope encrypted snapshots can also satisfy `read --decrypt` from encrypted per-file lazy blobs, and `read --offset N --length N --decrypt ...` can fetch only the encrypted chunks needed for the requested range. When encrypted lazy indexes are present, `restore --decrypt` can materialize files from encrypted lazy blobs without fetching the whole encrypted layer. The library also exposes a snapshot lower-store API that can do lookup and directory enumeration from config metadata before fetching content. Darwin FSKit and Linux native lazy FUSE can use this lower-store path for `--lazy` lower reads without restoring the lowerdir first, including encrypted reads when decrypt material is supplied. Linux kernel overlay runtime preparation still fetches/materializes whole lower layers.
 - Dirty tracking is rebuilt from upperdir state rather than maintained by an always-on daemon.

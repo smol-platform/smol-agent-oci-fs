@@ -111,6 +111,14 @@ func (s store) refsRoot() string {
 	return filepath.Join(s.root, "refs")
 }
 
+func (s store) remoteRoot() string {
+	return filepath.Join(s.root, "remotes", "sha256")
+}
+
+func (s store) lazyRoot() string {
+	return filepath.Join(s.root, "lazy", "sha256")
+}
+
 func (s store) mountsRoot() string {
 	return filepath.Join(s.root, "mounts")
 }
@@ -150,6 +158,53 @@ func (s store) readBlob(digest string) ([]byte, error) {
 		return nil, fmt.Errorf("blob %s digest mismatch: got %s", digest, got)
 	}
 	return data, nil
+}
+
+func (s store) hasBlob(digest string) bool {
+	hexDigest, err := digestHex(digest)
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(filepath.Join(s.blobRoot(), hexDigest))
+	return err == nil
+}
+
+type remoteBlobSource struct {
+	Registry string `json:"registry"`
+	Repo     string `json:"repo"`
+	Digest   string `json:"digest"`
+}
+
+func (s store) writeRemoteBlobSource(source remoteBlobSource) error {
+	hexDigest, err := digestHex(source.Digest)
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(s.remoteRoot(), hexDigest+".json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(source, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writePrivateFile(path, data)
+}
+
+func (s store) readRemoteBlobSource(digest string) (remoteBlobSource, error) {
+	hexDigest, err := digestHex(digest)
+	if err != nil {
+		return remoteBlobSource{}, err
+	}
+	data, err := os.ReadFile(filepath.Join(s.remoteRoot(), hexDigest+".json"))
+	if err != nil {
+		return remoteBlobSource{}, err
+	}
+	var source remoteBlobSource
+	if err := json.Unmarshal(data, &source); err != nil {
+		return remoteBlobSource{}, fmt.Errorf("parse remote blob source %s: %w", digest, err)
+	}
+	return source, nil
 }
 
 func (s store) writeRef(name, digest string) error {

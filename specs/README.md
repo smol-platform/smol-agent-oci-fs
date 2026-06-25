@@ -29,6 +29,7 @@ OSIx defines a disciplined convention for storing branchable, encrypted agent st
 - [Security And Provenance](./04-security-and-provenance.md)
 - [Agent State Semantics](./05-agent-state-semantics.md)
 - [FUSE And Overlay Filesystem Runtime](./06-fuse-overlay-runtime.md)
+- [Kubernetes Operator And CSI Runtime](./07-kubernetes-operator-csi.md)
 - [Milestones](./milestones.md)
 
 ## Compatibility Modes

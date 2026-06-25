@@ -10,6 +10,7 @@ appex_bundle="${app_bundle}/Contents/PlugIns/OSIxFSKitExtension.appex"
 host_bin="${app_bundle}/Contents/MacOS/OSIxFSKitHost"
 extension_bin="${appex_bundle}/Contents/MacOS/OSIxFSKitExtension"
 codesign_identity="${OSIX_FSKIT_CODESIGN_IDENTITY:--}"
+require_team_signing="${OSIX_FSKIT_REQUIRE_TEAM_SIGNING:-0}"
 expected_host_bundle_id="io.github.smol-platform.smol-agent-oci-fs.fskit.host"
 expected_extension_bundle_id="io.github.smol-platform.smol-agent-oci-fs.fskit.extension"
 expected_fs_type="OSIxFS"
@@ -23,6 +24,28 @@ if [[ ! -d /System/Library/Frameworks/FSKit.framework ]]; then
   echo "missing prerequisite: FSKit.framework runtime is unavailable; macOS 15.4 or newer is required" >&2
   exit 2
 fi
+
+if [[ "${require_team_signing}" == "1" && "${codesign_identity}" == "-" ]]; then
+  echo "OSIX_FSKIT_REQUIRE_TEAM_SIGNING=1 requires OSIX_FSKIT_CODESIGN_IDENTITY to be an Apple signing identity, not ad-hoc '-'" >&2
+  exit 2
+fi
+
+team_identifier() {
+  local bundle="$1"
+  codesign -dv --verbose=4 "${bundle}" 2>&1 | awk -F= '/^TeamIdentifier=/ {print $2; exit}'
+}
+
+verify_team_signed() {
+  local bundle="$1"
+  local label="$2"
+  local team
+  team="$(team_identifier "${bundle}")"
+  if [[ -z "${team}" || "${team}" == "not set" ]]; then
+    echo "${label} is not signed with an Apple TeamIdentifier; set OSIX_FSKIT_CODESIGN_IDENTITY to an Apple Development or Developer ID identity approved for com.apple.developer.fskit.fsmodule" >&2
+    exit 2
+  fi
+  echo "${label} TeamIdentifier=${team}"
+}
 
 sdk="$(xcrun --sdk macosx --show-sdk-path)"
 arch="$(uname -m)"
@@ -69,6 +92,10 @@ codesign -dvvv --entitlements "${build_root}/extension-entitlements.plist" "${ap
 grep -q "com.apple.developer.fskit.fsmodule" "${build_root}/extension-entitlements.plist"
 codesign --verify --strict "${appex_bundle}"
 codesign --verify --strict "${app_bundle}"
+if [[ "${require_team_signing}" == "1" ]]; then
+  verify_team_signed "${appex_bundle}" "extension"
+  verify_team_signed "${app_bundle}" "host app"
+fi
 plutil -lint \
   "${app_bundle}/Contents/Info.plist" \
   "${appex_bundle}/Contents/Info.plist"

@@ -1,0 +1,12 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: osix-system
+resources:
+  - crds/agentocifilesystems.yaml
+  - crds/agentocisnapshotpolicies.yaml
+  - crds/agentocisnapshots.yaml
+  - crds/agentociruntimeclasses.yaml
+  - rbac.yaml
+  - operator.yaml
+  - csi-node.yaml
+  - storageclass.yaml

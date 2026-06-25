@@ -113,13 +113,28 @@ osix compact ghcr.io/acme/agent-state/research-agent-a:main \
 
 ## Lazy Remote Access
 
-v0 MAY require full layer download before mount.
+`osix pull --lazy` MAY fetch only snapshot manifests and config blobs while
+recording remote layer locations. `osix read REF PATH` MAY then fetch and cache
+the first missing unencrypted layer needed to satisfy that file read.
+Encrypted snapshots MAY additionally emit encrypted per-file lazy blobs so
+`osix read --decrypt` can decrypt one file without decrypting the whole layer.
+This includes age-only layers, legacy KMS layers, and OSIx envelope layers.
+Per-file lazy index entries include encrypted blob digest/size plus plaintext
+digest/size; readers MUST verify the plaintext metadata after decrypting.
+Encrypted lazy entries MAY also include chunk descriptors and a Merkle root so
+`osix read --offset N --length N --decrypt ...` can fetch and decrypt only the
+chunks needed for a byte range. Runtime mount lowerdirs MAY still require full
+local layer materialization before Linux kernel overlay mounts. Darwin FSKit and
+Linux native lazy FUSE MAY use snapshot tree metadata and lazy read APIs to
+service lazy lower reads without first restoring the lowerdir, including
+encrypted range reads when decrypt material is provided to the mount. Linux
+native lazy FUSE MAY additionally perform writable upperdir copy-up and emit
+overlay whiteouts for deletes.
 
-Future lazy encrypted reads SHOULD use:
+Lazy encrypted range reads use:
 
 ```text
 chunk -> compress -> encrypt -> merkle-index
 ```
 
 The index MUST support integrity verification per chunk and SHOULD avoid leaking path lists in public metadata.
-

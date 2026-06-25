@@ -2,22 +2,61 @@ package osix
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 type RegistryReference struct {
 	Registry  string
 	Repo      string
 	Reference string
+}
+
+type RegistryProbeOptions struct {
+	Tag string
+}
+
+type RegistryProbeResult struct {
+	Repository     string   `json:"repository"`
+	RegistryHost   string   `json:"registryHost"`
+	Tag            string   `json:"tag"`
+	ConfigDigest   string   `json:"configDigest"`
+	LayerDigest    string   `json:"layerDigest"`
+	ManifestDigest string   `json:"manifestDigest"`
+	Operations     []string `json:"operations"`
+	Result         string   `json:"result"`
+	TestedAt       string   `json:"testedAt"`
+}
+
+type RemoteBranchConflictError struct {
+	Tag      string
+	Expected string
+	Current  string
+	Missing  bool
+}
+
+func (e RemoteBranchConflictError) Error() string {
+	if e.Missing {
+		return fmt.Sprintf("remote branch conflict for %s: expected %s but current is missing", e.Tag, e.Expected)
+	}
+	return fmt.Sprintf("remote branch conflict for %s: expected %s but current is %s", e.Tag, e.Expected, e.Current)
+}
+
+func IsRemoteBranchConflict(err error) bool {
+	var conflict RemoteBranchConflictError
+	return errors.As(err, &conflict)
 }
 
 func ParseRegistryReference(ref string) (RegistryReference, error) {
@@ -50,7 +89,117 @@ func IsRegistryReference(ref string) bool {
 	return err == nil
 }
 
+func ProbeRegistryAccess(remoteRepo string, opts RegistryProbeOptions) (RegistryProbeResult, error) {
+	remote, err := parseRegistryRepo(remoteRepo)
+	if err != nil {
+		return RegistryProbeResult{}, err
+	}
+	tag := strings.TrimSpace(opts.Tag)
+	if tag == "" {
+		tag = "osix-probe-" + time.Now().UTC().Format("20060102T150405Z")
+	}
+	client := newRegistryClient(remote.Registry, remote.Repo)
+	configData := []byte(`{"createdBy":"osix registry probe"}`)
+	layerData := []byte("osix registry probe\n")
+	configDigest := digestBytes(configData)
+	layerDigest := digestBytes(layerData)
+	manifest := Manifest{
+		SchemaVersion: 2,
+		MediaType:     MediaTypeOCIManifest,
+		Config: Descriptor{
+			MediaType: MediaTypeOCIConfig,
+			Digest:    configDigest,
+			Size:      int64(len(configData)),
+		},
+		Layers: []Descriptor{{
+			MediaType: MediaTypeLayer,
+			Digest:    layerDigest,
+			Size:      int64(len(layerData)),
+		}},
+		Annotations: map[string]string{
+			"org.opencontainers.image.title": "osix registry probe",
+		},
+	}
+	manifestData, err := json.Marshal(manifest)
+	if err != nil {
+		return RegistryProbeResult{}, err
+	}
+	manifestDigest := digestBytes(manifestData)
+	if err := client.putBlob(configDigest, configData); err != nil {
+		return RegistryProbeResult{}, err
+	}
+	if err := client.putBlob(layerDigest, layerData); err != nil {
+		return RegistryProbeResult{}, err
+	}
+	if err := client.putManifest(tag, manifestData); err != nil {
+		return RegistryProbeResult{}, err
+	}
+	pulledManifest, pulledDigest, err := client.getManifest(tag)
+	if err != nil {
+		return RegistryProbeResult{}, err
+	}
+	if pulledDigest != manifestDigest {
+		return RegistryProbeResult{}, fmt.Errorf("probe manifest digest mismatch: pushed %s got %s", manifestDigest, pulledDigest)
+	}
+	if !bytes.Equal(pulledManifest, manifestData) {
+		return RegistryProbeResult{}, fmt.Errorf("probe manifest content mismatch for %s", tag)
+	}
+	pulledLayer, err := client.getBlob(layerDigest)
+	if err != nil {
+		return RegistryProbeResult{}, err
+	}
+	if !bytes.Equal(pulledLayer, layerData) {
+		return RegistryProbeResult{}, fmt.Errorf("probe layer content mismatch for %s", layerDigest)
+	}
+	return RegistryProbeResult{
+		Repository:     remoteRepo,
+		RegistryHost:   remote.Registry,
+		Tag:            tag,
+		ConfigDigest:   configDigest,
+		LayerDigest:    layerDigest,
+		ManifestDigest: manifestDigest,
+		Operations: []string{
+			"put-config-blob",
+			"put-layer-blob",
+			"put-manifest",
+			"get-manifest",
+			"get-layer-blob",
+		},
+		Result:   "passed",
+		TestedAt: time.Now().UTC().Truncate(time.Second).Format(time.RFC3339),
+	}, nil
+}
+
 func PushSnapshot(workspaceRoot, remoteRepo, ref string, extraTags []string) error {
+	return PushSnapshotWithOptions(workspaceRoot, remoteRepo, ref, extraTags, PushOptions{})
+}
+
+func PruneRemoteSnapshots(remoteRepo string, digests []string) ([]string, error) {
+	remote, err := parseRegistryRepo(remoteRepo)
+	if err != nil {
+		return nil, err
+	}
+	client := newRegistryClient(remote.Registry, remote.Repo)
+	var deleted []string
+	for _, digest := range uniqueTags(digests) {
+		if strings.TrimSpace(digest) == "" {
+			continue
+		}
+		if _, err := digestHex(digest); err != nil {
+			return deleted, err
+		}
+		if err := client.deleteManifest(digest); err != nil {
+			if isRegistryNotFound(err) {
+				continue
+			}
+			return deleted, err
+		}
+		deleted = append(deleted, digest)
+	}
+	return deleted, nil
+}
+
+func PushSnapshotWithOptions(workspaceRoot, remoteRepo, ref string, extraTags []string, opts PushOptions) error {
 	s, err := findStore(workspaceRoot)
 	if err != nil {
 		return err
@@ -66,6 +215,13 @@ func PushSnapshot(workspaceRoot, remoteRepo, ref string, extraTags []string) err
 	client := newRegistryClient(remote.Registry, remote.Repo)
 	chain, err := s.snapshotChainWithDigests(digest)
 	if err != nil {
+		return err
+	}
+	if len(chain) == 0 {
+		return fmt.Errorf("snapshot chain for %s is empty", digest)
+	}
+	head := chain[len(chain)-1]
+	if err := checkRemoteTagPreconditions(client, uniqueTags(append(extraTags, head.Config.Snapshot.ID)), head.Config.Snapshot.ID, digest, opts.ExpectedParent); err != nil {
 		return err
 	}
 	for _, item := range chain {
@@ -108,7 +264,37 @@ func PushSnapshot(workspaceRoot, remoteRepo, ref string, extraTags []string) err
 	return nil
 }
 
+func checkRemoteTagPreconditions(client registryClient, tags []string, snapshotID, newDigest, expectedParent string) error {
+	expectedParent = strings.TrimSpace(expectedParent)
+	if expectedParent == "" {
+		return nil
+	}
+	for _, tag := range tags {
+		if tag == "" || tag == snapshotID || strings.HasPrefix(tag, "sha256:") {
+			continue
+		}
+		_, current, err := client.getManifest(tag)
+		if err != nil {
+			if isRegistryNotFound(err) {
+				return RemoteBranchConflictError{Tag: tag, Expected: expectedParent, Missing: true}
+			}
+			return fmt.Errorf("check remote tag %s: %w", tag, err)
+		}
+		if current == newDigest {
+			continue
+		}
+		if current != expectedParent {
+			return RemoteBranchConflictError{Tag: tag, Expected: expectedParent, Current: current}
+		}
+	}
+	return nil
+}
+
 func PullSnapshot(workspaceRoot, remoteRef, localTag string) (string, error) {
+	return PullSnapshotWithOptions(workspaceRoot, remoteRef, localTag, PullOptions{})
+}
+
+func PullSnapshotWithOptions(workspaceRoot, remoteRef, localTag string, opts PullOptions) (string, error) {
 	s, err := findStore(workspaceRoot)
 	if err != nil {
 		return "", err
@@ -118,7 +304,7 @@ func PullSnapshot(workspaceRoot, remoteRef, localTag string) (string, error) {
 		return "", err
 	}
 	client := newRegistryClient(ref.Registry, ref.Repo)
-	digest, err := pullManifestRecursive(s, client, ref.Reference)
+	digest, err := pullManifestRecursive(s, client, ref.Reference, opts)
 	if err != nil {
 		return "", err
 	}
@@ -130,7 +316,7 @@ func PullSnapshot(workspaceRoot, remoteRef, localTag string) (string, error) {
 	return digest, nil
 }
 
-func pullManifestRecursive(s store, client registryClient, ref string) (string, error) {
+func pullManifestRecursive(s store, client registryClient, ref string, opts PullOptions) (string, error) {
 	manifestData, digest, err := client.getManifest(ref)
 	if err != nil {
 		return "", err
@@ -150,11 +336,13 @@ func pullManifestRecursive(s store, client registryClient, ref string) (string, 
 		return "", err
 	}
 	for _, layer := range manifest.Layers {
-		layerData, err := client.getBlob(layer.Digest)
-		if err != nil {
-			return "", err
+		if opts.Lazy {
+			if err := s.writeRemoteBlobSource(remoteBlobSource{Registry: client.registry, Repo: client.repo, Digest: layer.Digest}); err != nil {
+				return "", err
+			}
+			continue
 		}
-		if _, err := s.writeBlob(layerData); err != nil {
+		if err := fetchRemoteBlob(s, client, layer.Digest); err != nil {
 			return "", err
 		}
 	}
@@ -168,7 +356,7 @@ func pullManifestRecursive(s store, client registryClient, ref string) (string, 
 		}
 	}
 	if cfg.Parent != nil {
-		if _, err := pullManifestRecursive(s, client, cfg.Parent.Digest); err != nil {
+		if _, err := pullManifestRecursive(s, client, cfg.Parent.Digest, opts); err != nil {
 			return "", err
 		}
 	}
@@ -176,6 +364,29 @@ func pullManifestRecursive(s store, client registryClient, ref string) (string, 
 		return "", err
 	}
 	return digest, nil
+}
+
+func fetchRemoteBlob(s store, client registryClient, digest string) error {
+	if s.hasBlob(digest) {
+		return nil
+	}
+	data, err := client.getBlob(digest)
+	if err != nil {
+		return err
+	}
+	if _, err := s.writeBlob(data); err != nil {
+		return err
+	}
+	return nil
+}
+
+func fetchRemoteBlobFromSource(s store, digest string) error {
+	source, err := s.readRemoteBlobSource(digest)
+	if err != nil {
+		return fmt.Errorf("no remote source for lazy blob %s: %w", digest, err)
+	}
+	client := newRegistryClient(source.Registry, source.Repo)
+	return fetchRemoteBlob(s, client, digest)
 }
 
 func pushSnapshotReferrers(s store, client registryClient, subjectDigest string, subjectSize int64) error {
@@ -206,7 +417,7 @@ func pushSnapshotReferrers(s store, client registryClient, subjectDigest string,
 		if err := client.putBlob(digestBytes(emptyConfig), emptyConfig); err != nil {
 			return err
 		}
-		manifestData, err := artifactReferrerManifest(subjectDesc, artifact.mediaType, artifactDigest, int64(len(artifactData)), emptyConfig)
+		manifestData, err := artifactReferrerManifest(subjectDesc, artifact.mediaType, artifactDigest, int64(len(artifactData)), MediaTypeEmptyConfig, emptyConfig, nil)
 		if err != nil {
 			return err
 		}
@@ -218,16 +429,207 @@ func pushSnapshotReferrers(s store, client registryClient, subjectDigest string,
 			return err
 		}
 	}
+	if err := pushCosignSignature(s, client, subjectDigest, emptyConfig); err != nil {
+		return err
+	}
+	if err := pushSigstoreBundles(s, client, subjectDesc, emptyConfig); err != nil {
+		return err
+	}
+	return pushEncryptedLazyIndex(s, client, subjectDesc, emptyConfig)
+}
+
+func pushCosignSignature(s store, client registryClient, subjectDigest string, emptyConfig []byte) error {
+	payloadDigest, err := s.resolveRef(cosignPayloadRefName(subjectDigest))
+	if err != nil {
+		return nil
+	}
+	metaDigest, err := s.resolveRef(cosignSignatureRefName(subjectDigest))
+	if err != nil {
+		return nil
+	}
+	payloadData, err := s.readBlob(payloadDigest)
+	if err != nil {
+		return err
+	}
+	metaData, err := s.readBlob(metaDigest)
+	if err != nil {
+		return err
+	}
+	var meta cosignSignatureMetadata
+	if err := json.Unmarshal(metaData, &meta); err != nil {
+		return fmt.Errorf("parse cosign signature metadata for %s: %w", subjectDigest, err)
+	}
+	if meta.PayloadDigest != payloadDigest {
+		return fmt.Errorf("cosign payload ref mismatch for %s: metadata has %s, ref has %s", subjectDigest, meta.PayloadDigest, payloadDigest)
+	}
+	if err := client.putBlob(payloadDigest, payloadData); err != nil {
+		return err
+	}
+	if err := client.putBlob(digestBytes(emptyConfig), emptyConfig); err != nil {
+		return err
+	}
+	manifest := Manifest{
+		SchemaVersion: 2,
+		MediaType:     MediaTypeOCIManifest,
+		ArtifactType:  "",
+		Config: Descriptor{
+			MediaType: MediaTypeOCIConfig,
+			Digest:    digestBytes(emptyConfig),
+			Size:      int64(len(emptyConfig)),
+		},
+		Layers: []Descriptor{{
+			MediaType: MediaTypeCosignSimpleSigning,
+			Digest:    payloadDigest,
+			Size:      int64(len(payloadData)),
+			Annotations: map[string]string{
+				"dev.cosignproject.cosign/signature": meta.Signature,
+			},
+		}},
+	}
+	manifestData, err := json.Marshal(manifest)
+	if err != nil {
+		return err
+	}
+	return client.putManifest(cosignSignatureTag(subjectDigest), manifestData)
+}
+
+func pushSigstoreBundles(s store, client registryClient, subjectDesc Descriptor, emptyConfig []byte) error {
+	var descriptors []Descriptor
+	created := sigstoreArtifactCreatedAt(s, subjectDesc.Digest)
+	for _, bundle := range []struct {
+		refName   string
+		content   string
+		predicate string
+	}{
+		{refName: sigstoreSignatureBundleRefName(subjectDesc.Digest), content: "message-signature"},
+		{refName: sigstoreAttestationBundleRefName(subjectDesc.Digest), content: "dsse-envelope", predicate: "https://slsa.dev/provenance/v1"},
+	} {
+		bundleDigest, err := s.resolveRef(bundle.refName)
+		if err != nil {
+			continue
+		}
+		bundleData, err := s.readBlob(bundleDigest)
+		if err != nil {
+			return err
+		}
+		if err := client.putBlob(bundleDigest, bundleData); err != nil {
+			return err
+		}
+		if err := client.putBlob(digestBytes(emptyConfig), emptyConfig); err != nil {
+			return err
+		}
+		annotations := map[string]string{
+			"dev.sigstore.bundle.content":      bundle.content,
+			"org.opencontainers.image.created": created,
+		}
+		if bundle.predicate != "" {
+			annotations["dev.sigstore.bundle.predicateType"] = bundle.predicate
+		}
+		manifestData, err := artifactReferrerManifest(subjectDesc, MediaTypeSigstoreBundle, bundleDigest, int64(len(bundleData)), MediaTypeOCIEmpty, emptyConfig, annotations)
+		if err != nil {
+			return err
+		}
+		manifestDigest := digestBytes(manifestData)
+		if err := client.putManifest(manifestDigest, manifestData); err != nil {
+			return err
+		}
+		descriptors = append(descriptors, Descriptor{
+			MediaType:    MediaTypeOCIManifest,
+			ArtifactType: MediaTypeSigstoreBundle,
+			Digest:       manifestDigest,
+			Size:         int64(len(manifestData)),
+			Annotations:  annotations,
+		})
+	}
+	if len(descriptors) == 0 {
+		return nil
+	}
+	return client.putReferrersTag(sigstoreReferrersTag(subjectDesc.Digest), descriptors)
+}
+
+func pushEncryptedLazyIndex(s store, client registryClient, subjectDesc Descriptor, emptyConfig []byte) error {
+	record, err := readEncryptedLazyIndexRecord(s, subjectDesc.Digest)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if record.IndexDigest == "" {
+		return nil
+	}
+	for _, entry := range record.Files {
+		if entry.Digest != "" {
+			data, err := s.readBlob(entry.Digest)
+			if err != nil {
+				return err
+			}
+			if err := client.putBlob(entry.Digest, data); err != nil {
+				return err
+			}
+		}
+		for _, chunk := range entry.Chunks {
+			if chunk.Digest == "" {
+				continue
+			}
+			data, err := s.readBlob(chunk.Digest)
+			if err != nil {
+				return err
+			}
+			if err := client.putBlob(chunk.Digest, data); err != nil {
+				return err
+			}
+		}
+	}
+	indexData, err := s.readBlob(record.IndexDigest)
+	if err != nil {
+		return err
+	}
+	if err := client.putBlob(record.IndexDigest, indexData); err != nil {
+		return err
+	}
+	if err := client.putBlob(digestBytes(emptyConfig), emptyConfig); err != nil {
+		return err
+	}
+	annotations := map[string]string{
+		"com.osix.lazy.kind":               "encrypted-per-file-index",
+		"org.opencontainers.image.created": record.CreatedAt.UTC().Format(time.RFC3339),
+	}
+	manifestData, err := artifactReferrerManifest(subjectDesc, MediaTypeLazyEncryptedIndex, record.IndexDigest, int64(len(indexData)), MediaTypeOCIEmpty, emptyConfig, annotations)
+	if err != nil {
+		return err
+	}
+	manifestDigest := digestBytes(manifestData)
+	if err := client.putManifest(manifestDigest, manifestData); err != nil {
+		return err
+	}
+	if err := client.putManifest(encryptedLazyIndexTag(subjectDesc.Digest), manifestData); err != nil {
+		return err
+	}
 	return nil
 }
 
-func artifactReferrerManifest(subject Descriptor, artifactType, blobDigest string, blobSize int64, emptyConfig []byte) ([]byte, error) {
+func sigstoreArtifactCreatedAt(s store, subjectDigest string) string {
+	metaDigest, err := s.resolveRef(cosignSignatureRefName(subjectDigest))
+	if err == nil {
+		if metaData, readErr := s.readBlob(metaDigest); readErr == nil {
+			var meta cosignSignatureMetadata
+			if json.Unmarshal(metaData, &meta) == nil && !meta.CreatedAt.IsZero() {
+				return meta.CreatedAt.UTC().Format(time.RFC3339)
+			}
+		}
+	}
+	return time.Now().UTC().Truncate(time.Second).Format(time.RFC3339)
+}
+
+func artifactReferrerManifest(subject Descriptor, artifactType, blobDigest string, blobSize int64, configMediaType string, emptyConfig []byte, annotations map[string]string) ([]byte, error) {
 	manifest := Manifest{
 		SchemaVersion: 2,
 		MediaType:     MediaTypeOCIManifest,
 		ArtifactType:  artifactType,
+		Annotations:   annotations,
 		Config: Descriptor{
-			MediaType: MediaTypeEmptyConfig,
+			MediaType: configMediaType,
 			Digest:    digestBytes(emptyConfig),
 			Size:      int64(len(emptyConfig)),
 		},
@@ -245,12 +647,53 @@ func artifactReferrerManifest(subject Descriptor, artifactType, blobDigest strin
 	return json.Marshal(manifest)
 }
 
+func (c registryClient) putReferrersTag(tag string, descriptors []Descriptor) error {
+	existing, _, err := c.getManifestAccept(tag, MediaTypeOCIIndex)
+	if err == nil {
+		var index Index
+		if decodeErr := json.Unmarshal(existing, &index); decodeErr == nil {
+			descriptors = mergeDescriptors(index.Manifests, descriptors)
+		}
+	} else if !isRegistryNotFound(err) {
+		return err
+	}
+	index := Index{
+		SchemaVersion: 2,
+		MediaType:     MediaTypeOCIIndex,
+		Manifests:     descriptors,
+	}
+	data, err := json.Marshal(index)
+	if err != nil {
+		return err
+	}
+	return c.putManifestMediaType(tag, data, MediaTypeOCIIndex)
+}
+
+func mergeDescriptors(existing, next []Descriptor) []Descriptor {
+	out := append([]Descriptor{}, existing...)
+	for _, desc := range next {
+		if !hasDescriptor(out, desc.Digest) {
+			out = append(out, desc)
+		}
+	}
+	return out
+}
+
+func hasDescriptor(descs []Descriptor, digest string) bool {
+	for _, desc := range descs {
+		if desc.Digest == digest {
+			return true
+		}
+	}
+	return false
+}
+
 func pullSnapshotReferrers(s store, client registryClient, subjectDigest string) error {
 	pulled := map[string]bool{}
 	referrers, err := client.getReferrers(subjectDigest)
 	if err == nil {
 		for _, desc := range referrers {
-			if desc.ArtifactType != MediaTypeSignature && desc.ArtifactType != MediaTypeProvenance {
+			if desc.ArtifactType != MediaTypeSignature && desc.ArtifactType != MediaTypeProvenance && desc.ArtifactType != MediaTypeSigstoreBundle && desc.ArtifactType != MediaTypeLazyEncryptedIndex {
 				continue
 			}
 			if err := pullReferrerManifest(s, client, desc.Digest, subjectDigest); err != nil {
@@ -273,6 +716,15 @@ func pullSnapshotReferrers(s store, client registryClient, subjectDigest string)
 			return err
 		}
 	}
+	if err := pullCosignSignature(s, client, subjectDigest); err != nil && !isRegistryNotFound(err) {
+		return err
+	}
+	if err := pullSigstoreReferrersTag(s, client, subjectDigest); err != nil && !isRegistryNotFound(err) {
+		return err
+	}
+	if err := pullEncryptedLazyIndexTag(s, client, subjectDigest); err != nil && !isRegistryNotFound(err) {
+		return err
+	}
 	return nil
 }
 
@@ -288,7 +740,7 @@ func pullReferrerManifest(s store, client registryClient, ref, subjectDigest str
 	if manifest.Subject == nil || manifest.Subject.Digest != subjectDigest {
 		return fmt.Errorf("referrer %s subject mismatch", ref)
 	}
-	if manifest.ArtifactType != MediaTypeSignature && manifest.ArtifactType != MediaTypeProvenance {
+	if manifest.ArtifactType != MediaTypeSignature && manifest.ArtifactType != MediaTypeProvenance && manifest.ArtifactType != MediaTypeSigstoreBundle && manifest.ArtifactType != MediaTypeLazyEncryptedIndex {
 		return nil
 	}
 	if len(manifest.Layers) != 1 {
@@ -307,9 +759,93 @@ func pullReferrerManifest(s store, client registryClient, ref, subjectDigest str
 		return s.writeRef(signatureRefName(subjectDigest), layer.Digest)
 	case MediaTypeProvenance:
 		return s.writeRef(provenanceRefName(subjectDigest), layer.Digest)
+	case MediaTypeSigstoreBundle:
+		refName := sigstoreSignatureBundleRefName(subjectDigest)
+		if manifest.Annotations["dev.sigstore.bundle.content"] == "dsse-envelope" {
+			refName = sigstoreAttestationBundleRefName(subjectDigest)
+		}
+		return s.writeRef(refName, layer.Digest)
+	case MediaTypeLazyEncryptedIndex:
+		if err := s.writeRemoteBlobSource(remoteBlobSource{Registry: client.registry, Repo: client.repo, Digest: layer.Digest}); err != nil {
+			return err
+		}
+		return s.writeRef(encryptedLazyIndexRefName(subjectDigest), layer.Digest)
 	default:
 		return nil
 	}
+}
+
+func pullCosignSignature(s store, client registryClient, subjectDigest string) error {
+	manifestData, _, err := client.getManifest(cosignSignatureTag(subjectDigest))
+	if err != nil {
+		return err
+	}
+	var manifest Manifest
+	if err := json.Unmarshal(manifestData, &manifest); err != nil {
+		return fmt.Errorf("parse cosign signature manifest for %s: %w", subjectDigest, err)
+	}
+	if len(manifest.Layers) == 0 {
+		return fmt.Errorf("cosign signature manifest for %s has no layers", subjectDigest)
+	}
+	layer := manifest.Layers[0]
+	if layer.MediaType != MediaTypeCosignSimpleSigning {
+		return fmt.Errorf("cosign signature layer for %s has media type %s", subjectDigest, layer.MediaType)
+	}
+	signature := layer.Annotations["dev.cosignproject.cosign/signature"]
+	if signature == "" {
+		return fmt.Errorf("cosign signature manifest for %s missing signature annotation", subjectDigest)
+	}
+	payloadData, err := client.getBlob(layer.Digest)
+	if err != nil {
+		return err
+	}
+	if _, err := s.writeBlob(payloadData); err != nil {
+		return err
+	}
+	if err := s.writeRef(cosignPayloadRefName(subjectDigest), layer.Digest); err != nil {
+		return err
+	}
+	meta := cosignSignatureMetadata{
+		OSIxVersion:   Version,
+		PayloadDigest: layer.Digest,
+		Algorithm:     "ecdsa-p256-sha256",
+		Signature:     signature,
+		Signer:        "cosign",
+		CreatedAt:     time.Now().UTC().Truncate(time.Second),
+	}
+	metaData, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		return err
+	}
+	metaDesc, err := s.writeBlob(metaData)
+	if err != nil {
+		return err
+	}
+	return s.writeRef(cosignSignatureRefName(subjectDigest), metaDesc.Digest)
+}
+
+func pullSigstoreReferrersTag(s store, client registryClient, subjectDigest string) error {
+	indexData, _, err := client.getManifestAccept(sigstoreReferrersTag(subjectDigest), MediaTypeOCIIndex)
+	if err != nil {
+		return err
+	}
+	var index Index
+	if err := json.Unmarshal(indexData, &index); err != nil {
+		return fmt.Errorf("parse Sigstore referrers index for %s: %w", subjectDigest, err)
+	}
+	for _, desc := range index.Manifests {
+		if desc.ArtifactType != MediaTypeSigstoreBundle {
+			continue
+		}
+		if err := pullReferrerManifest(s, client, desc.Digest, subjectDigest); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func pullEncryptedLazyIndexTag(s store, client registryClient, subjectDigest string) error {
+	return pullReferrerManifest(s, client, encryptedLazyIndexTag(subjectDigest), subjectDigest)
 }
 
 type registryRepo struct {
@@ -487,11 +1023,15 @@ func (c registryClient) getBlob(digest string) ([]byte, error) {
 }
 
 func (c registryClient) putManifest(ref string, data []byte) error {
+	return c.putManifestMediaType(ref, data, MediaTypeOCIManifest)
+}
+
+func (c registryClient) putManifestMediaType(ref string, data []byte, mediaType string) error {
 	req, err := http.NewRequest(http.MethodPut, c.url("/v2/"+c.repo+"/manifests/"+ref), bytes.NewReader(data))
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Content-Type", MediaTypeOCIManifest)
+	req.Header.Set("Content-Type", mediaType)
 	resp, err := c.do(req)
 	if err != nil {
 		return err
@@ -504,12 +1044,36 @@ func (c registryClient) putManifest(ref string, data []byte) error {
 	return nil
 }
 
+func (c registryClient) deleteManifest(digest string) error {
+	req, err := http.NewRequest(http.MethodDelete, c.url("/v2/"+c.repo+"/manifests/"+digest), nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.do(req)
+	if err != nil {
+		return err
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode == http.StatusAccepted || resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusNoContent {
+		return nil
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return registryStatusError{op: "delete manifest", ref: digest, status: resp.Status, code: resp.StatusCode}
+	}
+	return fmt.Errorf("delete manifest %s: %s", digest, resp.Status)
+}
+
 func (c registryClient) getManifest(ref string) ([]byte, string, error) {
+	return c.getManifestAccept(ref, MediaTypeOCIManifest)
+}
+
+func (c registryClient) getManifestAccept(ref string, accept string) ([]byte, string, error) {
 	req, err := http.NewRequest(http.MethodGet, c.url("/v2/"+c.repo+"/manifests/"+ref), nil)
 	if err != nil {
 		return nil, "", err
 	}
-	req.Header.Set("Accept", MediaTypeOCIManifest)
+	req.Header.Set("Accept", accept)
 	resp, err := c.do(req)
 	if err != nil {
 		return nil, "", err
@@ -755,6 +1319,8 @@ func loadDockerConfigCredentials(registry string) registryCredentials {
 			Password      string `json:"password"`
 			IdentityToken string `json:"identitytoken"`
 		} `json:"auths"`
+		CredHelpers map[string]string `json:"credHelpers"`
+		CredsStore  string            `json:"credsStore"`
 	}
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return registryCredentials{}
@@ -782,7 +1348,44 @@ func loadDockerConfigCredentials(registry string) registryCredentials {
 			return registryCredentials{Username: username, Password: password}
 		}
 	}
+	for _, key := range dockerConfigRegistryKeys(registry) {
+		if helper := strings.TrimSpace(cfg.CredHelpers[key]); helper != "" {
+			return loadDockerCredentialHelperCredentials(helper, key)
+		}
+	}
+	if helper := strings.TrimSpace(cfg.CredsStore); helper != "" {
+		for _, key := range dockerConfigRegistryKeys(registry) {
+			if creds := loadDockerCredentialHelperCredentials(helper, key); creds != (registryCredentials{}) {
+				return creds
+			}
+		}
+	}
 	return registryCredentials{}
+}
+
+func loadDockerCredentialHelperCredentials(helper, serverURL string) registryCredentials {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "docker-credential-"+helper, "get")
+	cmd.Stdin = strings.NewReader(serverURL + "\n")
+	out, err := cmd.Output()
+	if err != nil {
+		return registryCredentials{}
+	}
+	var payload struct {
+		Username string `json:"Username"`
+		Secret   string `json:"Secret"`
+	}
+	if err := json.Unmarshal(out, &payload); err != nil {
+		return registryCredentials{}
+	}
+	if payload.Username == "" && payload.Secret == "" {
+		return registryCredentials{}
+	}
+	if payload.Username == "<token>" {
+		return registryCredentials{Token: payload.Secret}
+	}
+	return registryCredentials{Username: payload.Username, Password: payload.Secret}
 }
 
 func dockerConfigPath() string {

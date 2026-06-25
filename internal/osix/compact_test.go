@@ -52,6 +52,59 @@ func TestCompactDryRunAndCheckpoint(t *testing.T) {
 	assertFile(t, filepath.Join(restore, "agent", "workspace", "file.txt"), "v3\n")
 }
 
+func TestCompactPrunesLocalRefsAndBlobsAfterCheckpointReplacement(t *testing.T) {
+	root := t.TempDir()
+	if _, err := Init(root, InitOptions{Base: "base", Name: "agent", StateRef: "local/agent", Mount: filepath.Join(root, "fs"), DefaultBranch: "main"}); err != nil {
+		t.Fatal(err)
+	}
+	fs := filepath.Join(root, "fs")
+	mustWrite(t, filepath.Join(fs, "agent", "workspace", "file.txt"), "v1\n")
+	first, err := Snapshot(root, fs, SnapshotOptions{Tag: "snap-000001", AlsoTag: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(fs, "agent", "workspace", "file.txt"), "v2\n")
+	second, err := Snapshot(root, fs, SnapshotOptions{Tag: "snap-000002", AlsoTag: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := Compact(root, second.ManifestDigest, CompactPolicy{
+		SquashEvery:    2,
+		CheckpointTag:  "checkpoint-main",
+		CheckpointTags: []string{"main", "latest"},
+		PruneLocal:     true,
+		PruneSource:    true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.CheckpointDigest == "" || len(plan.PrunedRefs) == 0 || len(plan.PrunedBlobs) == 0 {
+		t.Fatalf("expected checkpoint and local pruning: %#v", plan)
+	}
+	s, err := findStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.resolveRef("main"); err != nil || got != plan.CheckpointDigest {
+		t.Fatalf("main ref = %s err=%v, want checkpoint %s", got, err, plan.CheckpointDigest)
+	}
+	for _, ref := range []string{"snap-000001", "snap-000002"} {
+		if _, err := s.resolveRef(ref); err == nil {
+			t.Fatalf("expected %s ref to be pruned", ref)
+		}
+	}
+	for _, digest := range []string{first.ManifestDigest, second.ManifestDigest} {
+		if s.hasBlob(digest) {
+			t.Fatalf("expected manifest blob %s to be pruned", digest)
+		}
+	}
+	restore := filepath.Join(root, "restore")
+	if err := Restore(root, "checkpoint-main", restore, RestoreOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	assertFile(t, filepath.Join(restore, "agent", "workspace", "file.txt"), "v2\n")
+}
+
 func stringsJoin(items []string) string {
 	out := ""
 	for _, item := range items {

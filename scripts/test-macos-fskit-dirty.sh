@@ -96,6 +96,34 @@ swift build --package-path "${repo_root}/macos/OSIxFSKit" -c release >/dev/null
 fskitctl="${repo_root}/macos/OSIxFSKit/.build/release/osix-fskitctl"
 valid_digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
+if OSIX_FSKIT_REQUIRE_TEAM_SIGNING=1 \
+  OSIX_FSKIT_CODESIGN_IDENTITY=- \
+  "${repo_root}/scripts/build-macos-fskit.sh" \
+  > "${tmp}/require-helper-team-signing.out" \
+  2> "${tmp}/require-helper-team-signing.err"; then
+  echo "build-macos-fskit accepted ad-hoc helper signing while team signing was required" >&2
+  exit 1
+elif [[ "$?" -ne 2 ]]; then
+  echo "build-macos-fskit helper team-signing requirement returned unexpected status" >&2
+  cat "${tmp}/require-helper-team-signing.err" >&2
+  exit 1
+fi
+grep -q "OSIX_FSKIT_REQUIRE_TEAM_SIGNING=1 requires OSIX_FSKIT_CODESIGN_IDENTITY" "${tmp}/require-helper-team-signing.err"
+
+if OSIX_FSKIT_REQUIRE_TEAM_SIGNING=1 \
+  OSIX_FSKIT_CODESIGN_IDENTITY=- \
+  "${repo_root}/scripts/build-macos-fskit-app.sh" \
+  > "${tmp}/require-team-signing.out" \
+  2> "${tmp}/require-team-signing.err"; then
+  echo "build-macos-fskit-app accepted ad-hoc signing while team signing was required" >&2
+  exit 1
+elif [[ "$?" -ne 2 ]]; then
+  echo "build-macos-fskit-app team-signing requirement returned unexpected status" >&2
+  cat "${tmp}/require-team-signing.err" >&2
+  exit 1
+fi
+grep -q "OSIX_FSKIT_REQUIRE_TEAM_SIGNING=1 requires OSIX_FSKIT_CODESIGN_IDENTITY" "${tmp}/require-team-signing.err"
+
 mkdir -p "${tmp}/helper/lower" "${tmp}/helper/upper" "${tmp}/helper/work" "${tmp}/helper/nested-upper/work" "${tmp}/helper/world-upper"
 printf "not a directory" > "${tmp}/helper/file-target"
 ln -s "${tmp}/helper/lower" "${tmp}/helper/lower-link"

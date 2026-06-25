@@ -341,6 +341,7 @@ struct VolumeMetadataSmoke {
         try FileManager.default.createDirectory(atPath: URL(fileURLWithPath: removedDirectoryWhiteout).deletingLastPathComponent().path, withIntermediateDirectories: true)
         FileManager.default.createFile(atPath: removedDirectoryWhiteout, contents: Data())
         try validateMountOptions(lower: lower, upper: upper, work: work)
+        try validateLazyLowerStoreReadThrough(parent: URL(fileURLWithPath: work).deletingLastPathComponent().path)
 
         let volume = OSIxVolume(
             volumeID: FSVolume.Identifier(uuid: UUID()),
@@ -1321,6 +1322,9 @@ struct VolumeMetadataSmoke {
                 "osix.work=" + encodeMountOption(work),
                 "osix.mode=" + encodeMountOption("overlay"),
                 "osix.rw=" + encodeMountOption("true"),
+                "osix.lazy=" + encodeMountOption("true"),
+                "osix.osix_bin=" + encodeMountOption("/bin/sh"),
+                "osix.decrypt=" + encodeMountOption("/tmp/osix-identity.txt"),
             ].joined(separator: ","),
         ])
         guard parsed.bundle == "io.github.smol-platform.smol-agent-oci-fs.fskit.extension",
@@ -1330,11 +1334,16 @@ struct VolumeMetadataSmoke {
               parsed.lower == lower,
               parsed.upper == upper,
               parsed.work == work,
-              parsed.mode == "overlay" else {
+              parsed.mode == "overlay",
+              parsed.osixBin == "/bin/sh",
+              parsed.decrypt == "/tmp/osix-identity.txt" else {
             throw SmokeError("mount option parser did not decode helper-style -o payload")
         }
         guard parsed.allowsWrites else {
             throw SmokeError("mount option parser did not preserve writable flag")
+        }
+        guard parsed.lazyLower else {
+            throw SmokeError("mount option parser did not preserve lazy flag")
         }
         try parsed.validateForMount()
 
@@ -1428,6 +1437,18 @@ struct VolumeMetadataSmoke {
         } catch is OSIxMountOptionsValidationError {
         }
 
+        do {
+            try OSIxMountOptions(bundle: nil, workspace: work, sourceRef: "snap-000001", sourceDigest: validDigest, lower: lower, upper: upper, work: work, mode: "overlay", lazy: "maybe").validateForMount()
+            throw SmokeError("mount options accepted malformed lazy flag")
+        } catch is OSIxMountOptionsValidationError {
+        }
+
+        do {
+            try OSIxMountOptions(bundle: nil, workspace: work, sourceRef: "snap-000001", sourceDigest: validDigest, lower: lower, upper: upper, work: work, mode: "overlay", lazy: "true", osixBin: lower).validateForMount()
+            throw SmokeError("mount options accepted directory osix_bin")
+        } catch is OSIxMountOptionsValidationError {
+        }
+
         let readOnly = OSIxMountOptions(bundle: nil, workspace: work, sourceRef: "snap-000001", sourceDigest: validDigest, lower: lower, upper: upper, work: work, mode: "overlay", rw: "false")
         try readOnly.validateForMount()
         guard !readOnly.allowsWrites else {
@@ -1457,6 +1478,105 @@ struct VolumeMetadataSmoke {
             throw SmokeError("mount options accepted symlink upperdir")
         } catch is OSIxMountOptionsValidationError {
         }
+    }
+
+    static func validateLazyLowerStoreReadThrough(parent: String) throws {
+        let fixture = URL(fileURLWithPath: parent).appendingPathComponent("lazy-lower-smoke").path
+        let workspace = URL(fileURLWithPath: fixture).appendingPathComponent("workspace").path
+        let lower = URL(fileURLWithPath: fixture).appendingPathComponent("lower").path
+        let upper = URL(fileURLWithPath: fixture).appendingPathComponent("upper").path
+        let work = URL(fileURLWithPath: fixture).appendingPathComponent("work").path
+        for directory in [workspace, lower, upper, work] {
+            try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        }
+        let sourceDigest = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        let configDigest = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        try writeBlob(workspace: workspace, digest: sourceDigest, json: """
+        {"config":{"digest":"\(configDigest)"}}
+        """)
+        try writeBlob(workspace: workspace, digest: configDigest, json: """
+        {"tree":[
+          {"path":"agent","type":"dir","mode":493},
+          {"path":"agent/workspace","type":"dir","mode":493},
+          {"path":"agent/workspace/lazy.txt","type":"file","mode":420,"size":11,"digest":"sha256:lazy"},
+          {"path":"agent/workspace/hidden.txt","type":"file","mode":420,"size":6,"digest":"sha256:hidden"},
+          {"path":"agent/workspace/link","type":"symlink","mode":511,"linkname":"lazy.txt"}
+        ]}
+        """)
+        let osixBin = URL(fileURLWithPath: fixture).appendingPathComponent("fake-osix-read.sh").path
+        let decryptMaterial = URL(fileURLWithPath: fixture).appendingPathComponent("identity.txt").path
+        try Data("identity".utf8).write(to: URL(fileURLWithPath: decryptMaterial))
+        let argsFile = URL(fileURLWithPath: fixture).appendingPathComponent("osix-read-args.txt").path
+        try """
+        #!/bin/sh
+        printf '%s\n' "$@" > "\(argsFile)"
+        if [ "$1" = read ] && [ "$3" = /agent/workspace/lazy.txt ]; then
+          printf 'zy l'
+          exit 0
+        fi
+        printf 'unexpected osix args\n' >&2
+        exit 64
+        """.write(toFile: osixBin, atomically: true, encoding: .utf8)
+        guard chmod(osixBin, 0o700) == 0 else {
+            throw SmokeError("failed to make fake osix read helper executable")
+        }
+        try FileManager.default.createDirectory(atPath: URL(fileURLWithPath: upper).appendingPathComponent("agent/workspace").path, withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: URL(fileURLWithPath: upper).appendingPathComponent("agent/workspace/.wh.hidden.txt").path, contents: Data())
+
+        let volume = OSIxVolume(
+            volumeID: FSVolume.Identifier(uuid: UUID()),
+            volumeName: FSFileName(string: "OSIxLazyLowerSmoke"),
+            mountOptions: OSIxMountOptions(
+                bundle: nil,
+                workspace: workspace,
+                sourceRef: "lazy-smoke",
+                sourceDigest: sourceDigest,
+                lower: lower,
+                upper: upper,
+                work: work,
+                mode: "overlay",
+                lazy: "true",
+                osixBin: osixBin,
+                decrypt: decryptMaterial
+            )
+        )
+        let agent = try lookupItem(volume: volume, name: FSFileName(string: "agent"), directory: OSIxItem.root)
+        let workspaceItem = try lookupItem(volume: volume, name: FSFileName(string: "workspace"), directory: agent)
+        let file = try lookupItem(volume: volume, name: FSFileName(string: "lazy.txt"), directory: workspaceItem)
+        let attributes = try getAttributes(volume: volume, item: file)
+        guard attributes.size == 11 else {
+            throw SmokeError("lazy lower attributes size = \(attributes.size), want 11")
+        }
+        let entries = try enumerateDirectory(volume: volume, directory: workspaceItem, includeAttributes: true)
+        guard entries.map(\.name) == ["lazy.txt", "link"] else {
+            throw SmokeError("lazy lower enumeration returned \(entries.map(\.name)), want lazy.txt and link without whiteouted hidden.txt")
+        }
+        guard try readSymbolicLink(volume: volume, item: try lookupItem(volume: volume, name: FSFileName(string: "link"), directory: workspaceItem)) == "lazy.txt" else {
+            throw SmokeError("lazy lower symlink target was not read from snapshot metadata")
+        }
+        let data = try readData(volume: volume, item: file, length: 4, offset: 2)
+        guard String(data: data, encoding: .utf8) == "zy l" else {
+            throw SmokeError("lazy lower read returned \(String(data: data, encoding: .utf8) ?? "<binary>"), want zy l")
+        }
+        let args = try String(contentsOfFile: argsFile, encoding: .utf8).split(separator: "\n").map(String.init)
+        guard args == ["read", sourceDigest, "/agent/workspace/lazy.txt", "--offset", "2", "--length", "4", "--decrypt", decryptMaterial] else {
+            throw SmokeError("lazy lower read invoked helper with \(args)")
+        }
+        if FileManager.default.fileExists(atPath: URL(fileURLWithPath: lower).appendingPathComponent("agent/workspace/lazy.txt").path) {
+            throw SmokeError("lazy lower read materialized content into lowerdir")
+        }
+    }
+
+    static func writeBlob(workspace: String, digest: String, json: String) throws {
+        let hex = digest.replacingOccurrences(of: "sha256:", with: "")
+        let path = URL(fileURLWithPath: workspace)
+            .appendingPathComponent(".osix")
+            .appendingPathComponent("blobs")
+            .appendingPathComponent("sha256")
+            .appendingPathComponent(hex)
+            .path
+        try FileManager.default.createDirectory(atPath: URL(fileURLWithPath: path).deletingLastPathComponent().path, withIntermediateDirectories: true)
+        try Data(json.utf8).write(to: URL(fileURLWithPath: path))
     }
 
     static func encodeMountOption(_ value: String) -> String {

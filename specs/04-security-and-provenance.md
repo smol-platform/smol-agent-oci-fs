@@ -62,16 +62,46 @@ v0 SHOULD integrate with cosign-compatible signing:
 osix snapshot ./agentfs \
   --push \
   --encrypt kms:aws:kms:... \
-  --sign keyless \
+  --sign sigstore-keyless \
+  --sigstore-identity-token-file ./oidc-token.jwt \
   --attest slsa
 ```
 
 Signatures and attestations SHOULD be attached as OCI referrers to the snapshot
 manifest. v0 also publishes deterministic fallback tags for registries that can
 store subject-bearing manifests but cannot list them through the Referrers API.
-Pull clients import signature/provenance artifacts when present, but basic
-restore remains possible without them unless verification policy requires a
-signature.
+For Sigstore/cosign interoperability, signed snapshots SHOULD also publish the
+cosign simple-signing tag `sha256-<subject-hex>.sig` and Sigstore bundle
+referrers-index tag `sha256-<subject-hex>` with bundle manifests using artifact
+type `application/vnd.dev.sigstore.bundle.v0.3+json`. Pull clients import
+signature/provenance artifacts when present, but basic restore remains possible
+without them unless verification policy requires a signature.
+
+`--sign keyless` is reserved for local development signing with generated local
+keys. `--sign sigstore-keyless` requests a Fulcio certificate with a
+caller-supplied OIDC token, writes Rekor transparency-log material by default,
+emits certificate-backed Sigstore v0.3 bundles, and publishes the same
+cosign/Sigstore registry discovery layout as local signing. Public signing
+accepts Sigstore trust material from TUF by default or explicit
+`--sigstore-trusted-root`, `--sigstore-signing-config`,
+`--sigstore-fulcio-url`, `--sigstore-rekor-url`, and
+`--sigstore-timestamp-url` flags.
+
+`osix verify` and restore-time preverification support two Sigstore-compatible
+policy modes:
+
+- `--trusted-key` validates OSIx ed25519 signatures or cosign-compatible ECDSA
+  P-256 simple-signing artifacts.
+- `--certificate-identity`/`--certificate-identity-regexp` with
+  `--certificate-oidc-issuer`/`--certificate-oidc-issuer-regexp` validates a
+  Sigstore bundle against the artifact digest, Fulcio certificate identity,
+  OIDC issuer, trusted root/TUF material, Rekor transparency-log inclusion,
+  observer timestamp material, and Fulcio certificate SCTs.
+
+The default Sigstore keyless verification policy fails closed when required
+identity, timestamp, tlog, SCT, or trusted-root material is missing or invalid.
+Private deployments MAY relax individual tlog, timestamp, or SCT checks with
+explicit `--sigstore-ignore-*` flags.
 
 ## Provenance
 
@@ -143,6 +173,8 @@ Snapshot config SHOULD include:
 - ciphertext layer digest
 - mtree digest
 - Merkle root when chunked storage exists
+- encrypted per-file lazy blob digest/size and plaintext digest/size when file-granular encrypted reads are enabled
+- encrypted lazy chunk digest/size, plaintext digest/size, offset, and Merkle root when range reads are enabled
 - signature referrer digest when available
 
 Clients SHOULD fail closed when required integrity metadata is missing or invalid.

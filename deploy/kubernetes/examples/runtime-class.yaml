@@ -1,0 +1,13 @@
+apiVersion: agent.smol.ai/v1alpha1
+kind: AgentOCIRuntimeClass
+metadata:
+  name: linux-overlay
+spec:
+  mountMode: auto
+  cacheRoot: /var/lib/osix
+  runtimeImage: ghcr.io/smol-platform/smol-agent-oci-fs-csi:latest
+  privilegedOverlay: true
+  fuse: true
+  lazyFuse: true
+  nodeSelector:
+    kubernetes.io/os: linux

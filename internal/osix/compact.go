@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -39,18 +40,20 @@ func Compact(workspaceRoot, ref string, policy CompactPolicy) (CompactPlan, erro
 		ChainLength:      len(chain),
 		CreateCheckpoint: len(chain) >= policy.SquashEvery,
 		CheckpointTag:    policy.CheckpointTag,
+		CheckpointTags:   uniqueTags(policy.CheckpointTags),
 	}
 	if plan.CheckpointTag == "" {
 		plan.CheckpointTag = fmt.Sprintf("checkpoint-%06d", chain[len(chain)-1].Config.Snapshot.Sequence)
 	}
+	plan.CheckpointTags = uniqueTags(append([]string{plan.CheckpointTag}, plan.CheckpointTags...))
 	for i, item := range chain {
 		reason := ""
-		if i == len(chain)-1 {
-			reason = "branch head"
-		} else if keepSet[item.Digest] || keepSet[item.Config.Snapshot.ID] {
+		if keepSet[item.Digest] || keepSet[item.Config.Snapshot.ID] {
 			reason = "explicit keep"
 		} else if policy.PreserveSigned && s.hasSignature(item.Digest) {
 			reason = "signed snapshot"
+		} else if i == len(chain)-1 && !policy.PruneSource {
+			reason = "branch head"
 		}
 		if reason != "" {
 			plan.Keep = append(plan.Keep, item.Digest)
@@ -84,7 +87,104 @@ func Compact(workspaceRoot, ref string, policy CompactPolicy) (CompactPlan, erro
 		return plan, err
 	}
 	plan.CheckpointDigest = snap.ManifestDigest
+	for _, tag := range plan.CheckpointTags {
+		if err := s.writeRef(tag, snap.ManifestDigest); err != nil {
+			return plan, err
+		}
+	}
+	if policy.PruneLocal {
+		prunedRefs, prunedBlobs, err := s.pruneLocalSnapshots(plan.DeleteCandidates)
+		if err != nil {
+			return plan, err
+		}
+		plan.PrunedRefs = prunedRefs
+		plan.PrunedBlobs = prunedBlobs
+	}
 	return plan, nil
+}
+
+func (s store) pruneLocalSnapshots(candidates []string) ([]string, []string, error) {
+	deleteSet := map[string]bool{}
+	candidateBlobs := map[string]bool{}
+	for _, digest := range candidates {
+		digest = strings.TrimSpace(digest)
+		if digest == "" {
+			continue
+		}
+		deleteSet[digest] = true
+		candidateBlobs[digest] = true
+		if _, manifest, _, err := s.loadManifest(digest); err == nil {
+			candidateBlobs[manifest.Config.Digest] = true
+			for _, layer := range manifest.Layers {
+				candidateBlobs[layer.Digest] = true
+			}
+		}
+	}
+	if len(deleteSet) == 0 {
+		return nil, nil, nil
+	}
+
+	var prunedRefs []string
+	refs, err := s.listRefs()
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, ref := range refs {
+		if !deleteSet[ref.Digest] {
+			continue
+		}
+		path := filepath.Join(s.refsRoot(), safeRefName(ref.Name))
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return prunedRefs, nil, err
+		}
+		prunedRefs = append(prunedRefs, ref.Name)
+	}
+	sort.Strings(prunedRefs)
+
+	reachable, err := s.reachableBlobDigests()
+	if err != nil {
+		return prunedRefs, nil, err
+	}
+	var prunedBlobs []string
+	for digest := range candidateBlobs {
+		if reachable[digest] {
+			continue
+		}
+		hexDigest, err := digestHex(digest)
+		if err != nil {
+			return prunedRefs, prunedBlobs, err
+		}
+		path := filepath.Join(s.blobRoot(), hexDigest)
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return prunedRefs, prunedBlobs, err
+		}
+		prunedBlobs = append(prunedBlobs, digest)
+	}
+	sort.Strings(prunedBlobs)
+	return prunedRefs, prunedBlobs, nil
+}
+
+func (s store) reachableBlobDigests() (map[string]bool, error) {
+	reachable := map[string]bool{}
+	refs, err := s.listRefs()
+	if err != nil {
+		return nil, err
+	}
+	for _, ref := range refs {
+		reachable[ref.Digest] = true
+		chain, err := s.snapshotChainWithDigests(ref.Digest)
+		if err != nil {
+			continue
+		}
+		for _, item := range chain {
+			reachable[item.Digest] = true
+			reachable[item.Manifest.Config.Digest] = true
+			for _, layer := range item.Manifest.Layers {
+				reachable[layer.Digest] = true
+			}
+		}
+	}
+	return reachable, nil
 }
 
 func (s store) hasSignature(digest string) bool {

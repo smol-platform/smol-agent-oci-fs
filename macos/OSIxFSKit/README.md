@@ -50,6 +50,20 @@ OSIX_FSKIT_CODESIGN_IDENTITY="Apple Development: Example Developer (TEAMID)" \
   ./scripts/build-macos-fskit-app.sh
 ```
 
+Set `OSIX_FSKIT_REQUIRE_TEAM_SIGNING=1` when preparing a capable-host build.
+That mode refuses ad-hoc signing and verifies that the helper, host app, and
+embedded extension report a non-empty Apple `TeamIdentifier` after signing:
+
+```sh
+OSIX_FSKIT_CODESIGN_IDENTITY="Apple Development: Example Developer (TEAMID)" \
+OSIX_FSKIT_REQUIRE_TEAM_SIGNING=1 \
+  ./scripts/build-macos-fskit.sh
+
+OSIX_FSKIT_CODESIGN_IDENTITY="Apple Development: Example Developer (TEAMID)" \
+OSIX_FSKIT_REQUIRE_TEAM_SIGNING=1 \
+  ./scripts/build-macos-fskit-app.sh
+```
+
 Install the host app into `~/Applications` and launch it for local development:
 
 ```sh
@@ -94,6 +108,8 @@ the extension after the System Settings switch is enabled, verify that
 `security find-identity -v -p codesigning` lists a valid Apple signing identity
 and rebuild with `OSIX_FSKIT_CODESIGN_IDENTITY`; ad-hoc signatures have no
 TeamIdentifier for FSKit to associate with the enabled module.
+Use `./scripts/install-macos-fskit-app.sh --require-team-signing` to enforce
+that requirement before the app is installed or registered.
 
 ## Runtime Contract
 
@@ -141,6 +157,10 @@ for FSKit. On an enabled macOS 15.4+ host, run:
 
 Set `OSIX_FSKIT_READY_TIMEOUT` to change how long the harness waits for
 `FSClient` readiness after installing/registering the local app.
+Set `OSIX_FSKIT_PREFLIGHT_REPORT=path` to write a JSON readiness report even
+when FSClient blocks the run, and `OSIX_FSKIT_EVIDENCE_DIR=dir` to write a
+timestamped `result: passed` evidence file after the live Darwin FSKit
+integration test succeeds.
 
 That test mounts both macOS `overlay` and `fuse` modes through FSKit, mutates the
 mounted tree, verifies dirty tracking, snapshots, restores, and unmounts.

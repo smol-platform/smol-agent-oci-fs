@@ -15,6 +15,7 @@ open_after_install=1
 register_after_install=1
 elect_after_install=1
 build_helper=1
+require_team_signing="${OSIX_FSKIT_REQUIRE_TEAM_SIGNING:-0}"
 background_registration_launch=0
 wait_ready_seconds=0
 open_settings_on_failure=auto
@@ -74,7 +75,7 @@ verify_installed_app() {
 
 usage() {
   cat >&2 <<EOF
-usage: $0 [--no-open] [--background-register] [--wait-ready=SECONDS] [--open-settings] [--no-open-settings] [--no-register] [--no-elect] [--no-helper]
+usage: $0 [--no-open] [--background-register] [--wait-ready=SECONDS] [--open-settings] [--no-open-settings] [--no-register] [--no-elect] [--no-helper] [--require-team-signing]
 
 Builds and installs the OSIx FSKit host app into:
   ${target_app}
@@ -85,7 +86,8 @@ for the current user, and opens the host app. Use --background-register with
 the app. macOS may still require enabling the File System Extension in System
 Settings before FSClient reports it ready. Interactive installs open the Login
 Items & Extensions settings pane when FSClient still reports the extension
-disabled; use --no-open-settings to suppress this.
+disabled; use --no-open-settings to suppress this. Use --require-team-signing
+to fail unless the host app and extension are signed with an Apple TeamIdentifier.
 EOF
 }
 
@@ -121,6 +123,10 @@ for arg in "$@"; do
     --no-helper)
       build_helper=0
       ;;
+    --require-team-signing)
+      require_team_signing=1
+      export OSIX_FSKIT_REQUIRE_TEAM_SIGNING=1
+      ;;
     *)
       echo "unknown argument: ${arg}" >&2
       usage
@@ -134,6 +140,10 @@ if [[ "${wait_ready_seconds}" != "0" && ! "${wait_ready_seconds}" =~ ^[0-9]+$ ]]
   exit 64
 fi
 
+if [[ "${require_team_signing}" == "1" && "${OSIX_FSKIT_CODESIGN_IDENTITY:--}" == "-" ]]; then
+  echo "--require-team-signing requires OSIX_FSKIT_CODESIGN_IDENTITY to be an Apple signing identity, not ad-hoc '-'" >&2
+  exit 2
+fi
 if [[ "${build_helper}" -eq 1 ]]; then
   "${repo_root}/scripts/build-macos-fskit.sh"
 fi

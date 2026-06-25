@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: demo-agent
+spec:
+  restartPolicy: Never
+  containers:
+    - name: agent
+      image: busybox:1.36
+      command: ["sh", "-c", "date >> /state/agent/workspace/events.log && cat /state/agent/workspace/events.log"]
+      volumeMounts:
+        - name: state
+          mountPath: /state
+  volumes:
+    - name: state
+      persistentVolumeClaim:
+        claimName: demo-agent-state

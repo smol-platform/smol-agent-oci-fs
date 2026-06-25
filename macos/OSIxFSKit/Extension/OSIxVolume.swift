@@ -9,6 +9,7 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
     private let fileManager = FileManager.default
     private var mountOptions: OSIxMountOptions?
     private var root = OSIxItem.root
+    private var cachedSnapshotLowerTree: [String: OSIxTreeEntry]?
 
     convenience init(volumeID: FSVolume.Identifier, volumeName: FSFileName, mountOptions: OSIxMountOptions) {
         self.init(volumeID: volumeID, volumeName: volumeName)
@@ -209,7 +210,13 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
             return
         }
         do {
-            let destination = try fileManager.destinationOfSymbolicLink(atPath: try currentItem(for: item).physicalPath)
+            let current = try currentItem(for: item)
+            let destination: String
+            if current.source == .lower, let linkname = current.treeEntry?.linkname, !itemExists(at: current.physicalPath) {
+                destination = linkname
+            } else {
+                destination = try fileManager.destinationOfSymbolicLink(atPath: current.physicalPath)
+            }
             reply(FSFileName(string: destination), nil)
         } catch {
             reply(nil, error)
@@ -368,6 +375,10 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
             let current = try currentItem(for: item)
             if !mountOptionsAllowsWrites(), needsWriteAccess(access.rawValue) {
                 reply(false, nil)
+                return
+            }
+            if current.source == .lower, let entry = current.treeEntry, !itemExists(at: current.physicalPath) {
+                reply(isAccessAllowed(access, mode: mode_t(entry.mode), uid: geteuid(), gid: getegid(), itemType: current.type), nil)
                 return
             }
             var statBuffer = stat()
@@ -713,7 +724,7 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
 
     private func materializeVisibleDirectory(_ directory: OSIxItem, to destination: String) throws {
         try fileManager.createDirectory(atPath: destination, withIntermediateDirectories: false)
-        try copyDirectoryMetadata(from: directory.physicalPath, to: destination)
+        try copyDirectoryMetadata(from: directory, to: destination)
         for entry in try directoryEntries(for: directory) where entry.name != "." && entry.name != ".." {
             let child = try currentItem(for: entry.item)
             let childDestination = URL(fileURLWithPath: destination).appendingPathComponent(entry.name).path
@@ -721,7 +732,7 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
             case .directory:
                 try materializeVisibleDirectory(child, to: childDestination)
             default:
-                try fileManager.copyItem(atPath: child.physicalPath, toPath: childDestination)
+                try copyItemToUpper(from: child, to: childDestination)
             }
         }
     }
@@ -790,6 +801,15 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
             let current = try currentItem(for: item)
             guard current.type == .file else {
                 throw posixError(current.type == .directory ? EISDIR : EINVAL)
+            }
+            if current.source == .lower, current.treeEntry != nil, !itemExists(at: current.physicalPath) {
+                let data = try readLazyLowerFile(current.relativePath, offset: Int64(offset), length: length)
+                let copyCount = min(data.count, buffer.length)
+                buffer.withUnsafeMutableBytes { rawBuffer -> Void in
+                    data.copyBytes(to: rawBuffer.bindMemory(to: UInt8.self), count: copyCount)
+                }
+                reply(copyCount, nil)
+                return
             }
             let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: current.physicalPath))
             var handleClosed = false
@@ -864,6 +884,23 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
 
     private func attributes(for item: OSIxItem) throws -> FSItem.Attributes {
         let attributes = FSItem.Attributes()
+        if item.source == .lower, let entry = item.treeEntry, !itemExists(at: item.physicalPath) {
+            attributes.type = item.type
+            attributes.mode = UInt32(entry.mode & 0o7777)
+            attributes.linkCount = 1
+            attributes.uid = UInt32(geteuid())
+            attributes.gid = UInt32(getegid())
+            attributes.size = UInt64(max(entry.size ?? 0, 0))
+            attributes.allocSize = attributes.size
+            attributes.fileID = item.id
+            attributes.parentID = item.parentID
+            let epoch = timespec(Date(timeIntervalSince1970: 0))
+            attributes.accessTime = epoch
+            attributes.modifyTime = epoch
+            attributes.changeTime = epoch
+            attributes.birthTime = epoch
+            return attributes
+        }
         var statBuffer = stat()
         guard lstat(item.physicalPath, &statBuffer) == 0 else {
             throw posixError(errno)
@@ -997,6 +1034,14 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
         return true
     }
 
+    private func isAccessAllowed(_ access: FSVolume.AccessMask, mode: mode_t, uid: uid_t, gid: gid_t, itemType: FSItem.ItemType) -> Bool {
+        var statBuffer = stat()
+        statBuffer.st_mode = mode
+        statBuffer.st_uid = uid
+        statBuffer.st_gid = gid
+        return isAccessAllowed(access, for: statBuffer, itemType: itemType)
+    }
+
     private func needsReadAccess(_ access: UInt) -> Bool {
         access & ((1 << 1) | (1 << 7) | (1 << 9) | (1 << 11)) != 0
     }
@@ -1056,6 +1101,9 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
                 return OSIxItem(relativePath: normalized, physicalPath: lowerCandidate, type: type, source: .lower)
             }
         }
+        if let entry = try? lazyLowerEntry(normalized), let type = itemType(for: entry), !isCoveredByOpaqueUpperDirectory(normalized) {
+            return OSIxItem(relativePath: normalized, physicalPath: lazyLowerPhysicalPath(normalized), type: type, source: .lower, treeEntry: entry)
+        }
         if normalized.isEmpty {
             return .root
         }
@@ -1067,6 +1115,7 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
         if let lower = mountOptions?.lower {
             names.formUnion(try visibleNames(in: upperPath(lower, directory.relativePath), applyingWhiteouts: false))
         }
+        names.formUnion(try visibleLazyLowerNames(in: directory.relativePath))
         if let upper = mountOptions?.upper {
             names.formUnion(try visibleNames(in: upperPath(upper, directory.relativePath), applyingWhiteouts: true))
         }
@@ -1139,10 +1188,10 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
             try fileManager.createDirectory(atPath: parentFilesystemPath(target), withIntermediateDirectories: true)
             if current.type == .directory {
                 try fileManager.createDirectory(atPath: target, withIntermediateDirectories: false)
-                try copyDirectoryMetadata(from: current.physicalPath, to: target)
+                try copyDirectoryMetadata(from: current, to: target)
                 return target
             }
-            try fileManager.copyItem(atPath: current.physicalPath, toPath: target)
+            try copyItemToUpper(from: current, to: target)
             return target
         } catch {
             removeCreatedUpperItemAndEmptyParents(item.relativePath, stoppingAt: existingUpperParent)
@@ -1205,6 +1254,44 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
         if utimensat(AT_FDCWD, destination, &times, 0) != 0 {
             throw posixError(errno)
         }
+    }
+
+    private func copyDirectoryMetadata(from item: OSIxItem, to destination: String) throws {
+        if item.source == .lower, let entry = item.treeEntry, !itemExists(at: item.physicalPath) {
+            if chmod(destination, mode_t(entry.mode & 0o7777)) != 0 {
+                throw posixError(errno)
+            }
+            var epochTimes = [
+                timespec(Date(timeIntervalSince1970: 0)),
+                timespec(Date(timeIntervalSince1970: 0)),
+            ]
+            if utimensat(AT_FDCWD, destination, &epochTimes, 0) != 0 {
+                throw posixError(errno)
+            }
+            return
+        }
+        try copyDirectoryMetadata(from: item.physicalPath, to: destination)
+    }
+
+    private func copyItemToUpper(from item: OSIxItem, to destination: String) throws {
+        if item.source == .lower, let entry = item.treeEntry, !itemExists(at: item.physicalPath) {
+            switch item.type {
+            case .file:
+                let data = try readLazyLowerFile(item.relativePath, offset: 0, length: Int(entry.size ?? 0))
+                guard fileManager.createFile(atPath: destination, contents: data, attributes: [.posixPermissions: NSNumber(value: entry.mode & 0o7777)]) else {
+                    throw posixError(EIO)
+                }
+            case .symlink:
+                guard let linkname = entry.linkname else {
+                    throw posixError(EINVAL)
+                }
+                try fileManager.createSymbolicLink(atPath: destination, withDestinationPath: linkname)
+            default:
+                throw posixError(EINVAL)
+            }
+            return
+        }
+        try fileManager.copyItem(atPath: item.physicalPath, toPath: destination)
     }
 
     private func createWhiteout(for relativePath: String) throws {
@@ -1352,7 +1439,113 @@ final class OSIxVolume: FSVolume, FSVolume.Operations, FSVolume.ReadWriteOperati
         guard let lower = mountOptions?.lower else {
             return false
         }
-        return itemType(at: upperPath(lower, relativePath)) != nil
+        return itemType(at: upperPath(lower, relativePath)) != nil || (try? lazyLowerEntry(relativePath)) != nil
+    }
+
+    private func lazyLowerEntry(_ relativePath: String) throws -> OSIxTreeEntry? {
+        guard mountOptions?.lazyLower == true else {
+            return nil
+        }
+        let normalized = normalizeRelativePath(relativePath)
+        guard !normalized.isEmpty else {
+            return OSIxTreeEntry(path: "", type: "dir", mode: 0o755, size: nil, digest: nil, linkname: nil)
+        }
+        return try snapshotLowerTree()[normalized]
+    }
+
+    private func visibleLazyLowerNames(in relativePath: String) throws -> Set<String> {
+        guard mountOptions?.lazyLower == true else {
+            return []
+        }
+        let normalized = normalizeRelativePath(relativePath)
+        if isCoveredByOpaqueUpperDirectory(joinRelative(normalized, "placeholder")) {
+            return []
+        }
+        var names = Set<String>()
+        for path in try snapshotLowerTree().keys where parentPath(path) == normalized {
+            let name = URL(fileURLWithPath: path).lastPathComponent
+            if !name.isEmpty {
+                names.insert(name)
+            }
+        }
+        return names
+    }
+
+    private func snapshotLowerTree() throws -> [String: OSIxTreeEntry] {
+        if let cachedSnapshotLowerTree {
+            return cachedSnapshotLowerTree
+        }
+        let tree = try OSIxDirtyIndex.parentTree(workspace: mountOptions?.workspace, sourceDigest: mountOptions?.sourceDigest)
+        cachedSnapshotLowerTree = tree
+        return tree
+    }
+
+    private func itemType(for entry: OSIxTreeEntry) -> FSItem.ItemType? {
+        switch entry.type {
+        case "dir":
+            return .directory
+        case "file":
+            return .file
+        case "symlink":
+            return .symlink
+        default:
+            return nil
+        }
+    }
+
+    private func lazyLowerPhysicalPath(_ relativePath: String) -> String {
+        guard let lower = mountOptions?.lower else {
+            return "/"
+        }
+        return upperPath(lower, relativePath)
+    }
+
+    private func readLazyLowerFile(_ relativePath: String, offset: Int64, length: Int) throws -> Data {
+        guard let sourceDigest = mountOptions?.sourceDigest else {
+            throw posixError(EINVAL)
+        }
+        guard offset >= 0, length >= 0 else {
+            throw posixError(EINVAL)
+        }
+        var args = [
+            "read",
+            sourceDigest,
+            "/" + normalizeRelativePath(relativePath),
+            "--offset",
+            String(offset),
+            "--length",
+            String(length),
+        ]
+        if let decrypt = mountOptions?.decrypt, !decrypt.isEmpty {
+            args.append("--decrypt")
+            args.append(decrypt)
+        }
+        let executable: String
+        if let osixBin = mountOptions?.osixBin, !osixBin.isEmpty {
+            executable = osixBin
+        } else {
+            executable = "/usr/bin/env"
+            args.insert("osix", at: 0)
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = args
+        if let workspace = mountOptions?.workspace {
+            process.currentDirectoryURL = URL(fileURLWithPath: workspace)
+        }
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardOutput = stdout
+        process.standardError = stderr
+        try process.run()
+        let data = stdout.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        if process.terminationStatus == 0 {
+            return data
+        }
+        let message = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? "osix read failed"
+        throw OSIxMountOptionsValidationError(description: message)
     }
 
     private func itemExists(at path: String) -> Bool {
@@ -1485,14 +1678,16 @@ final class OSIxItem: FSItem {
     let physicalPath: String
     let type: FSItem.ItemType
     let source: Source
+    let treeEntry: OSIxTreeEntry?
     let id: FSItem.Identifier
     let parentID: FSItem.Identifier
 
-    init(relativePath: String, physicalPath: String, type: FSItem.ItemType, source: Source) {
+    init(relativePath: String, physicalPath: String, type: FSItem.ItemType, source: Source, treeEntry: OSIxTreeEntry? = nil) {
         self.relativePath = normalizeRelativePath(relativePath)
         self.physicalPath = physicalPath
         self.type = type
         self.source = source
+        self.treeEntry = treeEntry
         self.id = itemID(for: self.relativePath)
         self.parentID = parentItemID(for: self.relativePath)
         super.init()

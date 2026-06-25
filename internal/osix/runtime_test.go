@@ -2,6 +2,7 @@ package osix
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -10,6 +11,83 @@ import (
 	"testing"
 	"time"
 )
+
+func TestSelectMountModeLazyFUSEWritableUsesNativeAvailability(t *testing.T) {
+	var lazyCalled bool
+	var fuseCalled bool
+	withMountAvailabilityChecks(t,
+		func(string) error { return errors.New("overlay should not be checked") },
+		func() error {
+			fuseCalled = true
+			return errors.New("fuse-overlayfs should not be required for lazy native FUSE")
+		},
+		func() error {
+			lazyCalled = true
+			return nil
+		},
+	)
+
+	mode, err := selectMountMode(t.TempDir(), MountFUSE, MountOptions{Lazy: true, RW: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode != MountFUSE {
+		t.Fatalf("mode = %s, want %s", mode, MountFUSE)
+	}
+	if !lazyCalled {
+		t.Fatal("lazy FUSE availability was not checked")
+	}
+	if fuseCalled {
+		t.Fatal("lazy native FUSE unexpectedly required fuse-overlayfs availability")
+	}
+}
+
+func TestSelectMountModeAutoLazyDoesNotFallThroughToOverlay(t *testing.T) {
+	var overlayCalled bool
+	var fuseCalled bool
+	withMountAvailabilityChecks(t,
+		func(string) error {
+			overlayCalled = true
+			return nil
+		},
+		func() error {
+			fuseCalled = true
+			return nil
+		},
+		func() error {
+			return errors.New("native lazy FUSE unavailable")
+		},
+	)
+
+	mode, err := selectMountMode(t.TempDir(), MountAuto, MountOptions{Lazy: true, RW: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode != MountMaterialized {
+		t.Fatalf("mode = %s, want %s", mode, MountMaterialized)
+	}
+	if overlayCalled {
+		t.Fatal("lazy auto unexpectedly checked kernel overlay availability")
+	}
+	if fuseCalled {
+		t.Fatal("lazy auto unexpectedly checked non-lazy FUSE availability")
+	}
+}
+
+func withMountAvailabilityChecks(t *testing.T, overlay func(string) error, fuse func() error, lazyFuse func() error) {
+	t.Helper()
+	oldOverlay := overlayAvailableAtCheck
+	oldFuse := fuseAvailableCheck
+	oldLazyFuse := lazyFuseAvailableCheck
+	overlayAvailableAtCheck = overlay
+	fuseAvailableCheck = fuse
+	lazyFuseAvailableCheck = lazyFuse
+	t.Cleanup(func() {
+		overlayAvailableAtCheck = oldOverlay
+		fuseAvailableCheck = oldFuse
+		lazyFuseAvailableCheck = oldLazyFuse
+	})
+}
 
 func TestMountRuntimeMaterializedStatusUnmountRecover(t *testing.T) {
 	root := t.TempDir()

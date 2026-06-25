@@ -1,0 +1,15 @@
+FROM golang:1.24-bookworm AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/osix ./cmd/osix
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/osix-csi-node ./cmd/osix-csi-node
+
+FROM debian:bookworm-slim
+RUN apt-get update \
+	&& apt-get install -y --no-install-recommends ca-certificates fuse3 fuse-overlayfs mount util-linux \
+	&& rm -rf /var/lib/apt/lists/*
+COPY --from=build /out/osix /usr/local/bin/osix
+COPY --from=build /out/osix-csi-node /usr/local/bin/osix-csi-node
+ENTRYPOINT ["/usr/local/bin/osix-csi-node"]

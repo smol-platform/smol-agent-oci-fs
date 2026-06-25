@@ -95,6 +95,43 @@ Supported replay policies:
 
 After restore or fork, OSIx-aware tool runtimes SHOULD consult the ledger before performing external writes.
 
+OSIx provides a generic adapter check for external tools:
+
+```sh
+osix side-effect check ./restored \
+  --tool github.create_issue \
+  --resource github:acme/repo/issues/123 \
+  --operation write \
+  --idempotency-key osix-2026-06-19-...
+```
+
+The check reads `.osix-replay-policy.json` plus
+`/agent/side-effects/ledger.jsonl` and returns a JSON decision. Restored or
+forked runtimes map ledger policy to one of `allow`, `mock`, `read-only`,
+`require-approval`, or `deny`; write-capable adapters MUST treat
+`require-approval`, `read-only`, and `deny` as blocking unless their caller has
+an explicit approval workflow.
+
+Reference adapters MAY wrap this gate with provider-specific resource names.
+The Go library includes:
+
+- `GitHubIssueAdapter`, which maps issue reads, issue creation, and issue
+  comments to stable resources such as `github:OWNER/REPO/issues/123`.
+- `GmailAdapter`, which maps message/thread reads, sends, drafts, and label
+  mutations to stable resources such as `gmail:MAILBOX/messages/MSG_ID`.
+- `GoogleCalendarAdapter`, which maps event reads, creates, updates, deletes,
+  and invitation responses to stable resources such as
+  `gcal:CALENDAR_ID/events/EVENT_ID`.
+- `LinearAdapter`, which maps issue reads, issue creation, issue updates, and
+  issue comments to stable resources such as
+  `linear:WORKSPACE/issues/ENG-123`.
+- `SlackAdapter`, which maps channel reads, message posts, message updates,
+  message deletes, and reactions to stable resources such as
+  `slack:WORKSPACE/channels/C123/messages/1700000000.000100`.
+
+Write-capable provider adapters return a typed block error for unsafe restored
+writes.
+
 ## Turn Boundaries
 
 Agent snapshots SHOULD align with turn boundaries. A turn boundary is a point where:
@@ -118,4 +155,3 @@ v0 MAY snapshot memory as normal files. Future versions SHOULD define memory-spe
 - migration between memory backends
 
 Memory indexes SHOULD be stored as encrypted referrer artifacts when they expose paths, text, embeddings, or other sensitive data.
-

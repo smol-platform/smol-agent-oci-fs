@@ -1,0 +1,13 @@
+apiVersion: agent.smol.ai/v1alpha1
+kind: AgentOCIFileSystem
+metadata:
+  name: demo-agent-state
+spec:
+  baseImage: cgr.dev/chainguard/static:latest
+  stateRef: registry.example.com/acme/demo-agent-state
+  branch: main
+  mountMode: auto
+  snapshotPolicyRef:
+    name: frequent-checkpoint
+  runtimeClassRef:
+    name: linux-overlay

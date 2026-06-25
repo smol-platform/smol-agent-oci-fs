@@ -8,6 +8,10 @@ import (
 )
 
 func prepareKernelMountDirs(workspaceRoot, sourceRef, target string, opts MountOptions) (root, lower, upper, work string, rootExisted bool, err error) {
+	return prepareKernelMountDirsWithRestore(workspaceRoot, sourceRef, target, opts, true)
+}
+
+func prepareKernelMountDirsWithRestore(workspaceRoot, sourceRef, target string, opts MountOptions, restoreLower bool) (root, lower, upper, work string, rootExisted bool, err error) {
 	s, err := findStore(workspaceRoot)
 	if err != nil {
 		return "", "", "", "", false, err
@@ -40,8 +44,10 @@ func prepareKernelMountDirs(workspaceRoot, sourceRef, target string, opts MountO
 			return "", "", "", "", rootExisted, err
 		}
 	}
-	if err := Restore(workspaceRoot, sourceRef, lower, RestoreOptions{Force: true, Decrypt: opts.Decrypt}); err != nil {
-		return "", "", "", "", rootExisted, fmt.Errorf("prepare lowerdir: %w", err)
+	if restoreLower {
+		if err := Restore(workspaceRoot, sourceRef, lower, RestoreOptions{Force: true, Decrypt: opts.Decrypt}); err != nil {
+			return "", "", "", "", rootExisted, fmt.Errorf("prepare lowerdir: %w", err)
+		}
 	}
 	return root, lower, upper, work, rootExisted, nil
 }

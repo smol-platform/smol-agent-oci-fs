@@ -1,0 +1,55 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: osix-csi-node
+  namespace: osix-system
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: osix-csi-node
+      app.kubernetes.io/part-of: smol-agent-oci-fs
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: osix-csi-node
+        app.kubernetes.io/part-of: smol-agent-oci-fs
+    spec:
+      serviceAccountName: osix-operator
+      containers:
+        - name: node
+          image: ghcr.io/smol-platform/smol-agent-oci-fs-csi:latest
+          imagePullPolicy: IfNotPresent
+          args: ["serve", "--addr", ":8081"]
+          ports:
+            - containerPort: 8081
+              name: health
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: kubelet
+              mountPath: /var/lib/kubelet
+              mountPropagation: Bidirectional
+            - name: osix-workspaces
+              mountPath: /var/lib/osix
+            - name: dev-fuse
+              mountPath: /dev/fuse
+      volumes:
+        - name: kubelet
+          hostPath:
+            path: /var/lib/kubelet
+        - name: osix-workspaces
+          hostPath:
+            path: /var/lib/osix
+            type: DirectoryOrCreate
+        - name: dev-fuse
+          hostPath:
+            path: /dev/fuse
+            type: CharDevice

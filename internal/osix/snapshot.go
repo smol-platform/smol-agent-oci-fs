@@ -200,6 +200,11 @@ func Snapshot(workspaceRoot, target string, opts SnapshotOptions) (SnapshotResul
 	if err != nil {
 		return SnapshotResult{}, err
 	}
+	if encrypt != "" {
+		if err := createEncryptedLazyIndex(s, manifestDesc.Digest, layerRoot, layerEntries, whiteouts, encrypt); err != nil {
+			return SnapshotResult{}, err
+		}
+	}
 
 	tags := uniqueTags([]string{snapshotID, opts.Tag, opts.AlsoTag, "latest"})
 	for _, tag := range tags {
@@ -212,7 +217,11 @@ func Snapshot(workspaceRoot, target string, opts SnapshotOptions) (SnapshotResul
 		}
 	}
 	if opts.Sign != "" {
-		if _, err := SignSnapshot(workspaceRoot, manifestDesc.Digest, opts.Sign, opts.Attest); err != nil {
+		if _, err := SignSnapshot(workspaceRoot, manifestDesc.Digest, SignOptions{
+			Signer:   opts.Sign,
+			Attest:   opts.Attest,
+			Sigstore: opts.Sigstore,
+		}); err != nil {
 			return SnapshotResult{}, err
 		}
 	}
@@ -224,12 +233,20 @@ func Restore(workspaceRoot, ref, target string, opts RestoreOptions) error {
 	if err != nil {
 		return err
 	}
-	digest, _, _, err := s.loadManifest(ref)
+	digest, _, cfg, err := s.loadManifest(ref)
 	if err != nil {
 		return err
 	}
 	if err := ensureRestoreTarget(target, opts.Force); err != nil {
 		return err
+	}
+	if ok, err := canRestoreFromEncryptedLazyIndexes(s, digest, opts); err != nil {
+		return err
+	} else if ok {
+		if err := restoreFromSnapshotTree(s, workspaceRoot, digest, cfg.Tree, target, opts); err != nil {
+			return err
+		}
+		return writeReplayMarker(target)
 	}
 	chain, err := s.snapshotChain(digest)
 	if err != nil {
@@ -242,7 +259,13 @@ func Restore(workspaceRoot, ref, target string, opts RestoreOptions) error {
 		layerDesc := manifest.Layers[0]
 		layer, err := s.readBlob(layerDesc.Digest)
 		if err != nil {
-			return err
+			if fetchErr := fetchRemoteBlobFromSource(s, layerDesc.Digest); fetchErr != nil {
+				return err
+			}
+			layer, err = s.readBlob(layerDesc.Digest)
+			if err != nil {
+				return err
+			}
 		}
 		layer, err = decryptLayer(layer, layerDesc, opts.Decrypt)
 		if err != nil {
@@ -253,6 +276,125 @@ func Restore(workspaceRoot, ref, target string, opts RestoreOptions) error {
 		}
 	}
 	return writeReplayMarker(target)
+}
+
+func canRestoreFromEncryptedLazyIndexes(s store, digest string, opts RestoreOptions) (bool, error) {
+	chain, err := s.snapshotChainWithDigests(digest)
+	if err != nil {
+		return false, err
+	}
+	encrypted := false
+	for _, item := range chain {
+		if len(item.Manifest.Layers) != 1 {
+			return false, fmt.Errorf("local prototype expects exactly one layer, got %d", len(item.Manifest.Layers))
+		}
+		layerDesc := item.Manifest.Layers[0]
+		if layerDesc.MediaType != MediaTypeLayerEnc {
+			return false, nil
+		}
+		encrypted = true
+		if strings.TrimSpace(opts.Decrypt) == "" {
+			return false, nil
+		}
+		if err := ensureEncryptedLazyIndexRecord(s, item.Digest, opts.Decrypt); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return false, nil
+			}
+			return false, err
+		}
+		path, err := encryptedLazyRecordPath(s, item.Digest)
+		if err != nil {
+			return false, err
+		}
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			return false, nil
+		} else if err != nil {
+			return false, err
+		}
+	}
+	return encrypted, nil
+}
+
+func restoreFromSnapshotTree(s store, workspaceRoot, digest string, tree []TreeEntry, target string, opts RestoreOptions) error {
+	chain, err := s.snapshotChainWithDigests(digest)
+	if err != nil {
+		return err
+	}
+	for _, entry := range tree {
+		if entry.Type != "dir" {
+			continue
+		}
+		path := filepath.Join(target, filepath.FromSlash(entry.Path))
+		if err := ensureNoSymlinkInPath(target, path); err != nil {
+			return err
+		}
+		if err := os.MkdirAll(path, fs.FileMode(entry.Mode&0o777)); err != nil {
+			return err
+		}
+		if err := os.Chmod(path, fs.FileMode(entry.Mode&0o777)); err != nil {
+			return err
+		}
+	}
+	for _, entry := range tree {
+		if entry.Type == "dir" {
+			continue
+		}
+		path := filepath.Join(target, filepath.FromSlash(entry.Path))
+		parent := filepath.Dir(path)
+		if err := ensureNoSymlinkInPath(target, parent); err != nil {
+			return err
+		}
+		if err := os.MkdirAll(parent, 0o755); err != nil {
+			return err
+		}
+		switch entry.Type {
+		case "file":
+			if err := ensureNotSymlink(path); err != nil {
+				return err
+			}
+			sourceDigest, err := restoreSourceDigestForEntry(chain, entry)
+			if err != nil {
+				return err
+			}
+			data, err := ReadSnapshotFile(workspaceRoot, sourceDigest, entry.Path, ReadFileOptions{Decrypt: opts.Decrypt})
+			if err != nil {
+				return err
+			}
+			if err := os.WriteFile(path, data, fs.FileMode(entry.Mode&0o777)); err != nil {
+				return err
+			}
+			if err := os.Chmod(path, fs.FileMode(entry.Mode&0o777)); err != nil {
+				return err
+			}
+		case "symlink":
+			if err := os.RemoveAll(path); err != nil {
+				return err
+			}
+			if err := os.Symlink(entry.Linkname, path); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("unsupported tree entry %q type %q", entry.Path, entry.Type)
+		}
+	}
+	return nil
+}
+
+func restoreSourceDigestForEntry(chain []snapshotChainItem, entry TreeEntry) (string, error) {
+	for i := len(chain) - 1; i >= 0; i-- {
+		current, ok := treeMap(chain[i].Config.Tree)[entry.Path]
+		if !ok || current != entry {
+			continue
+		}
+		if i == 0 {
+			return chain[i].Digest, nil
+		}
+		parent, parentOK := treeMap(chain[i-1].Config.Tree)[entry.Path]
+		if !parentOK || parent != entry {
+			return chain[i].Digest, nil
+		}
+	}
+	return "", fmt.Errorf("restore source not found for %s", entry.Path)
 }
 
 func Mount(workspaceRoot, ref, target string, opts MountOptions) (MountInfo, error) {

@@ -60,6 +60,10 @@ func fuseAvailable() error {
 	if _, err := exec.LookPath("fuse-overlayfs"); err != nil {
 		return fmt.Errorf("fuse-overlayfs not found in PATH")
 	}
+	return lazyFuseAvailable()
+}
+
+func lazyFuseAvailable() error {
 	if _, err := os.Stat("/dev/fuse"); err != nil {
 		return fmt.Errorf("/dev/fuse unavailable: %w", err)
 	}
@@ -120,6 +124,9 @@ func overlayUnmount(ctx context.Context, workspaceRoot, target string, info Moun
 }
 
 func fuseMount(ctx context.Context, workspaceRoot, sourceRef, target string, opts MountOptions) (MountInfo, error) {
+	if opts.Lazy {
+		return lazyFuseMount(ctx, workspaceRoot, sourceRef, target, opts)
+	}
 	s, err := findStore(workspaceRoot)
 	if err != nil {
 		return MountInfo{}, err
@@ -182,7 +189,7 @@ func fuseUnmount(ctx context.Context, workspaceRoot, target string, info MountIn
 	} else {
 		_ = unix.Unmount(target, 0)
 	}
-	if info.PID > 0 {
+	if info.PID > 0 && info.PID != os.Getpid() {
 		if p, err := os.FindProcess(info.PID); err == nil && opts.Force {
 			_ = p.Kill()
 		}

@@ -16,6 +16,9 @@ struct OSIxMountOptions {
     let work: String?
     let mode: String?
     let rw: String?
+    let lazy: String?
+    let osixBin: String?
+    let decrypt: String?
     let malformedOptions: [String]
 
     init(
@@ -28,6 +31,9 @@ struct OSIxMountOptions {
         work: String?,
         mode: String?,
         rw: String? = nil,
+        lazy: String? = nil,
+        osixBin: String? = nil,
+        decrypt: String? = nil,
         malformedOptions: [String] = []
     ) {
         self.bundle = bundle
@@ -39,6 +45,9 @@ struct OSIxMountOptions {
         self.work = work
         self.mode = mode
         self.rw = rw
+        self.lazy = lazy
+        self.osixBin = osixBin
+        self.decrypt = decrypt
         self.malformedOptions = malformedOptions
     }
 
@@ -59,12 +68,19 @@ struct OSIxMountOptions {
             work: values["work"],
             mode: values["mode"],
             rw: values["rw"],
+            lazy: values["lazy"],
+            osixBin: values["osix_bin"],
+            decrypt: values["decrypt"],
             malformedOptions: parsed.malformedOptions.sorted()
         )
     }
 
     var allowsWrites: Bool {
         rw?.lowercased() != "false"
+    }
+
+    var lazyLower: Bool {
+        lazy?.lowercased() == "true"
     }
 
     func validateForMount() throws {
@@ -95,6 +111,9 @@ struct OSIxMountOptions {
         if let rw, rw.lowercased() != "true", rw.lowercased() != "false" {
             throw OSIxMountOptionsValidationError(description: "osix.rw must be true or false")
         }
+        if let lazy, lazy.lowercased() != "true", lazy.lowercased() != "false" {
+            throw OSIxMountOptionsValidationError(description: "osix.lazy must be true or false")
+        }
 
         try validateDirectory(path: workspace!, option: "osix.workspace")
         try validateDirectory(path: lower!, option: "osix.lower", rejectWorldWritable: true)
@@ -102,6 +121,9 @@ struct OSIxMountOptions {
         try validateDirectory(path: work!, option: "osix.work", rejectWorldWritable: true)
         try validateRuntimeDirectoriesAreDisjoint()
         try validateSourceDigest(sourceDigest!)
+        if let osixBin, !osixBin.isEmpty {
+            try validateExecutable(path: osixBin, option: "osix.osix_bin")
+        }
     }
 
     private func validateDirectory(path: String, option: String, rejectWorldWritable: Bool = false) throws {
@@ -114,6 +136,19 @@ struct OSIxMountOptions {
         }
         if rejectWorldWritable, statBuffer.st_mode & mode_t(S_IWOTH) != 0 {
             throw OSIxMountOptionsValidationError(description: "refusing world-writable runtime directory \(option) \(path)")
+        }
+    }
+
+    private func validateExecutable(path: String, option: String) throws {
+        var statBuffer = stat()
+        guard lstat(path, &statBuffer) == 0 else {
+            throw OSIxMountOptionsValidationError(description: "\(option) \(path) is unavailable: \(String(cString: strerror(errno)))")
+        }
+        guard statBuffer.st_mode & S_IFMT != S_IFDIR else {
+            throw OSIxMountOptionsValidationError(description: "\(option) \(path) is a directory")
+        }
+        guard access(path, X_OK) == 0 else {
+            throw OSIxMountOptionsValidationError(description: "\(option) \(path) is not executable")
         }
     }
 

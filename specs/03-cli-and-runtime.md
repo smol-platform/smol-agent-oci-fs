@@ -110,6 +110,18 @@ client MUST keep credentials out of snapshot manifests, refs, logs, and local
 content blobs. v0 supports Basic credentials and Bearer token challenges from
 the OCI registry `WWW-Authenticate` response.
 
+### Read
+
+```text
+osix read restored-main /agent/workspace/notes.md
+osix read restored-main /agent/workspace/large.bin --offset 65536 --length 4096
+```
+
+Read returns a single file from the resolved snapshot chain. `--decrypt` supplies
+decrypt material for encrypted layers. When `--offset` and `--length` are set,
+the command returns only that byte range; encrypted lazy indexes may satisfy the
+range by fetching only the required encrypted chunks.
+
 ### Watch
 
 ```text
@@ -176,6 +188,24 @@ osix compact ghcr.io/acme/agent-state/research-agent-a:main \
 - side-effect replay policy enforcement
 
 The CLI MAY call library code directly for simple commands in v0. A daemon becomes necessary when mounts, watches, and background pushes need lifecycle management.
+
+The initial watch lifecycle is exposed as:
+
+```text
+osix watch start DIR [--every DURATION] [--max-dirty BYTES] [--on-turn-boundary] [--push]
+osix watch status DIR
+osix watch stop DIR
+osix watch list
+osix watch restart DIR
+```
+
+`watch start` launches a background runner that writes a daemon record,
+heartbeat state, stop file path, and log under `.osix/watch/`. `watch status`
+reads the record and marks stale state when the heartbeat is older than the
+configured interval threshold. `watch list` reports all daemon records with
+refreshed state. `watch restart` starts a stale, stopped, or failed watch with
+its prior options and refuses to replace a fresh running record. `watch stop`
+writes the stop file and sends a best-effort interrupt to the recorded process.
 
 ## Go API
 

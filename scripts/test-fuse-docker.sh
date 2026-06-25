@@ -3,7 +3,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 image="${OSIX_FUSE_DOCKER_IMAGE:-golang:1.24-bookworm}"
-test_pattern="${OSIX_FUSE_TEST_PATTERN:-TestFUSERuntimeIntegrationLinux}"
+test_pattern="${OSIX_FUSE_TEST_PATTERN:-Test.*FUSE.*RuntimeIntegrationLinux}"
 
 docker run --rm \
   --privileged \
@@ -19,5 +19,5 @@ docker run --rm \
     apt-get update >/dev/null
     apt-get install -y fuse-overlayfs >/dev/null
     fuse-overlayfs --version
-    go test -run "${TEST_PATTERN}" -count=1 -v ./internal/osix
+    go test -run "${TEST_PATTERN}" -count=1 -v ./internal/osix ./cmd/osix
   '
