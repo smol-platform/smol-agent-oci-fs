@@ -48,7 +48,7 @@ The current implementation provides:
 Build and publish images:
 
 ```sh
-OSIX_RELEASE_VERSION=v0.1.1 scripts/release-k8s-images.sh
+OSIX_RELEASE_VERSION=v0.1.2 scripts/release-k8s-images.sh
 ```
 
 Install manifests:
@@ -91,8 +91,8 @@ For a live gtr-provisioned cluster, first select the gtr kubeconfig/context and
 publish release images, then run:
 
 ```sh
-OSIX_OPERATOR_IMAGE=ghcr.io/smol-platform/smol-agent-oci-fs-operator:v0.1.1 \
-OSIX_CSI_IMAGE=ghcr.io/smol-platform/smol-agent-oci-fs-csi:v0.1.1 \
+OSIX_OPERATOR_IMAGE=ghcr.io/smol-platform/smol-agent-oci-fs-operator:v0.1.2 \
+OSIX_CSI_IMAGE=ghcr.io/smol-platform/smol-agent-oci-fs-csi:v0.1.2 \
 OSIX_GTR_STATE_REF=ghcr.io/acme/osix-autosnap-live \
 OSIX_GTR_REGISTRY_SECRET=osix-registry-auth \
 scripts/test-k8s-autosnap-gtr.sh

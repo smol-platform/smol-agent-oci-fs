@@ -9,6 +9,7 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -buildvcs=false -tr
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -buildvcs=false -trimpath -ldflags="-s -w" -o /out/osix-csi-node ./cmd/osix-csi-node
 
 FROM debian:bookworm-slim
+LABEL org.opencontainers.image.source="https://github.com/smol-platform/smol-agent-oci-fs"
 RUN apt-get update \
 	&& apt-get install -y --no-install-recommends ca-certificates fuse3 fuse-overlayfs mount util-linux \
 	&& rm -rf /var/lib/apt/lists/*

@@ -67,7 +67,7 @@ go build -o ./osix-csi-node ./cmd/osix-csi-node
 Build Kubernetes images:
 
 ```sh
-OSIX_RELEASE_VERSION=v0.1.1 scripts/release-k8s-images.sh
+OSIX_RELEASE_VERSION=v0.1.2 scripts/release-k8s-images.sh
 ```
 
 ## Demo
