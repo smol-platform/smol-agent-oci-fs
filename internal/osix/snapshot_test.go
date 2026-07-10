@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"io/fs"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"filippo.io/age"
 	"github.com/klauspost/compress/zstd"
@@ -107,6 +109,277 @@ func TestSnapshotRestoreDiffAndFork(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertFile(t, filepath.Join(restoreFork, "agent", "workspace", "notes.md"), "hello\n")
+}
+
+func TestSnapshotSigningFailureLeavesPublishedRefsUnchanged(t *testing.T) {
+	root := t.TempDir()
+	fsRoot := filepath.Join(root, "fs")
+	if _, err := Init(root, InitOptions{Base: "base", Name: "agent", StateRef: "local/agent", Mount: fsRoot, DefaultBranch: "main"}); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(fsRoot, "agent", "workspace", "file.txt"), "v1\n")
+	first, err := Snapshot(root, fsRoot, SnapshotOptions{Tag: "first", AlsoTag: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(fsRoot, "agent", "workspace", "file.txt"), "v2\n")
+	if _, err := Snapshot(root, fsRoot, SnapshotOptions{Tag: "signed-fail", AlsoTag: "main", Sign: filepath.Join(root, "missing-signing-key")}); err == nil {
+		t.Fatal("expected signing failure")
+	}
+	s, err := findStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ref := range []string{"main", "latest"} {
+		digest, err := s.resolveRef(ref)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if digest != first.ManifestDigest {
+			t.Fatalf("%s advanced after signing failure: got %s want %s", ref, digest, first.ManifestDigest)
+		}
+	}
+	if _, err := s.resolveRef("signed-fail"); err == nil {
+		t.Fatal("failed signed snapshot tag was published")
+	}
+}
+
+func TestSnapshotAttestationFailureLeavesPublishedRefsUnchanged(t *testing.T) {
+	root := t.TempDir()
+	fsRoot := filepath.Join(root, "fs")
+	if _, err := Init(root, InitOptions{Base: "base", Name: "agent", StateRef: "local/agent", Mount: fsRoot, DefaultBranch: "main"}); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(fsRoot, "agent", "workspace", "file.txt"), "v1\n")
+	first, err := Snapshot(root, fsRoot, SnapshotOptions{Tag: "first", AlsoTag: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(fsRoot, "agent", "workspace", "file.txt"), "v2\n")
+	previousSign := signForPublication
+	signForPublication = func(string, string, SignOptions) (VerifyResult, error) {
+		return VerifyResult{}, errors.New("injected attestation failure")
+	}
+	t.Cleanup(func() { signForPublication = previousSign })
+	if _, err := Snapshot(root, fsRoot, SnapshotOptions{Tag: "attestation-fail", AlsoTag: "main", Sign: "keyless", Attest: "slsa"}); err == nil {
+		t.Fatal("expected attestation failure")
+	}
+	s, err := findStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ref := range []string{"main", "latest"} {
+		digest, err := s.resolveRef(ref)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if digest != first.ManifestDigest {
+			t.Fatalf("%s advanced after attestation failure: got %s want %s", ref, digest, first.ManifestDigest)
+		}
+	}
+	if _, err := s.resolveRef("attestation-fail"); err == nil {
+		t.Fatal("failed attested snapshot tag was published")
+	}
+}
+
+func TestSnapshotRefTransactionRollsBackMultiTagRenameFailure(t *testing.T) {
+	root := t.TempDir()
+	fsRoot := filepath.Join(root, "fs")
+	if _, err := Init(root, InitOptions{Base: "base", Name: "agent", StateRef: "local/agent", Mount: fsRoot, DefaultBranch: "main"}); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(fsRoot, "agent", "workspace", "file.txt"), "v1\n")
+	first, err := Snapshot(root, fsRoot, SnapshotOptions{Tag: "first", AlsoTag: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(fsRoot, "agent", "workspace", "file.txt"), "v2\n")
+	previousRename := renameRefFile
+	renameRefFile = func(oldPath, newPath string) error {
+		if filepath.Base(newPath) == safeRefName("main") {
+			return errors.New("injected ref rename failure")
+		}
+		return os.Rename(oldPath, newPath)
+	}
+	t.Cleanup(func() { renameRefFile = previousRename })
+	if _, err := Snapshot(root, fsRoot, SnapshotOptions{Tag: "second", AlsoTag: "main"}); err == nil {
+		t.Fatal("expected ref transaction failure")
+	}
+	s, err := findStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ref := range []string{"main", "latest"} {
+		digest, err := s.resolveRef(ref)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if digest != first.ManifestDigest {
+			t.Fatalf("%s changed after transaction failure: got %s want %s", ref, digest, first.ManifestDigest)
+		}
+	}
+	if _, err := s.resolveRef("second"); err == nil {
+		t.Fatal("partially published snapshot tag survived rollback")
+	}
+}
+
+func TestRestoreFailuresPreserveExistingDestination(t *testing.T) {
+	newSnapshot := func(t *testing.T, encrypt string) (string, string) {
+		t.Helper()
+		root := t.TempDir()
+		fsRoot := filepath.Join(root, "fs")
+		if _, err := Init(root, InitOptions{Base: "base", Name: "agent", StateRef: "local/agent", Mount: fsRoot, DefaultBranch: "main", Encrypt: encrypt}); err != nil {
+			t.Fatal(err)
+		}
+		mustWrite(t, filepath.Join(fsRoot, "agent", "workspace", "file.txt"), "snapshot\n")
+		result, err := Snapshot(root, fsRoot, SnapshotOptions{Tag: "source"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return root, result.ManifestDigest
+	}
+	assertPreserved := func(t *testing.T, target string) {
+		t.Helper()
+		assertFile(t, filepath.Join(target, "keep.txt"), "original\n")
+		assertMissing(t, filepath.Join(target, "agent", "workspace", "file.txt"))
+	}
+
+	t.Run("missing-layer", func(t *testing.T) {
+		root, digest := newSnapshot(t, "")
+		s, err := findStore(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, manifest, _, err := s.loadManifest(digest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		layerHex, err := digestHex(manifest.Layers[0].Digest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(filepath.Join(s.blobRoot(), layerHex)); err != nil {
+			t.Fatal(err)
+		}
+		target := filepath.Join(root, "destination")
+		mustWrite(t, filepath.Join(target, "keep.txt"), "original\n")
+		if err := Restore(root, digest, target, RestoreOptions{Force: true}); err == nil {
+			t.Fatal("expected missing layer failure")
+		}
+		assertPreserved(t, target)
+	})
+
+	t.Run("decrypt", func(t *testing.T) {
+		root, digest := newSnapshot(t, "gpg:test-recipient")
+		target := filepath.Join(root, "destination")
+		mustWrite(t, filepath.Join(target, "keep.txt"), "original\n")
+		if err := Restore(root, digest, target, RestoreOptions{Force: true, Decrypt: "gpg:wrong-recipient"}); err == nil {
+			t.Fatal("expected decrypt failure")
+		}
+		assertPreserved(t, target)
+	})
+
+	t.Run("extract", func(t *testing.T) {
+		root, digest := newSnapshot(t, "")
+		s, err := findStore(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, manifest, _, err := s.loadManifest(digest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var tarData bytes.Buffer
+		tw := tar.NewWriter(&tarData)
+		if err := tw.WriteHeader(&tar.Header{Name: "unsupported", Typeflag: tar.TypeLink, Linkname: "elsewhere", Mode: 0o644}); err != nil {
+			t.Fatal(err)
+		}
+		if err := tw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		var layerData bytes.Buffer
+		zw, err := zstd.NewWriter(&layerData)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := zw.Write(tarData.Bytes()); err != nil {
+			t.Fatal(err)
+		}
+		if err := zw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		layer, err := s.writeBlob(layerData.Bytes())
+		if err != nil {
+			t.Fatal(err)
+		}
+		layer.MediaType = MediaTypeLayer
+		manifest.Layers = []Descriptor{layer}
+		manifestData, err := json.Marshal(manifest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		badManifest, err := s.writeBlob(manifestData)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.writeRef("bad-layer", badManifest.Digest); err != nil {
+			t.Fatal(err)
+		}
+		target := filepath.Join(root, "destination")
+		mustWrite(t, filepath.Join(target, "keep.txt"), "original\n")
+		if err := Restore(root, "bad-layer", target, RestoreOptions{Force: true}); err == nil {
+			t.Fatal("expected extraction failure")
+		}
+		assertPreserved(t, target)
+	})
+
+	t.Run("final-replacement", func(t *testing.T) {
+		root, digest := newSnapshot(t, "")
+		target := filepath.Join(root, "destination")
+		mustWrite(t, filepath.Join(target, "keep.txt"), "original\n")
+		previousRename := renameRestorePath
+		calls := 0
+		renameRestorePath = func(oldPath, newPath string) error {
+			calls++
+			if calls == 2 {
+				return errors.New("injected final restore rename failure")
+			}
+			return os.Rename(oldPath, newPath)
+		}
+		t.Cleanup(func() { renameRestorePath = previousRename })
+		if err := Restore(root, digest, target, RestoreOptions{Force: true}); err == nil {
+			t.Fatal("expected final replacement failure")
+		}
+		assertPreserved(t, target)
+		assertMissing(t, filepath.Join(root, ".destination.osix-backup"))
+	})
+}
+
+func TestRestoreRemovesStaleSiblingStage(t *testing.T) {
+	root := t.TempDir()
+	fsRoot := filepath.Join(root, "fs")
+	if _, err := Init(root, InitOptions{Base: "base", Name: "agent", StateRef: "local/agent", Mount: fsRoot, DefaultBranch: "main"}); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(fsRoot, "agent", "workspace", "file.txt"), "snapshot\n")
+	result, err := Snapshot(root, fsRoot, SnapshotOptions{Tag: "source"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "destination")
+	stale := filepath.Join(root, ".destination.osix-restore-stale")
+	if err := os.MkdirAll(stale, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(stale, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := Restore(root, result.ManifestDigest, target, RestoreOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	assertMissing(t, stale)
+	assertFile(t, filepath.Join(target, "agent", "workspace", "file.txt"), "snapshot\n")
 }
 
 func TestManifestUsesOSIxMediaTypes(t *testing.T) {
@@ -772,6 +1045,16 @@ func TestValidateChainAndExpectedParentConflict(t *testing.T) {
 	mustWrite(t, filepath.Join(fs, "agent", "workspace", "file.txt"), "v3\n")
 	if _, err := Snapshot(root, fs, SnapshotOptions{Tag: "snap-000003", AlsoTag: "main", ExpectedParent: first.ManifestDigest}); err == nil {
 		t.Fatalf("expected branch conflict")
+	}
+	s, err := findStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mainDigest, err := s.resolveRef("main"); err != nil || mainDigest != second.ManifestDigest {
+		t.Fatalf("main changed after expected-parent conflict: digest=%s err=%v", mainDigest, err)
+	}
+	if _, err := s.resolveRef("snap-000003"); err == nil {
+		t.Fatal("snapshot tag survived expected-parent transaction failure")
 	}
 	digest, err := Fork(root, "snap-000001", "experiment")
 	if err != nil {

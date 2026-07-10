@@ -45,6 +45,13 @@ jobs:
             exit 1
           fi
 
+      - name: Check generated install manifests
+        shell: bash
+        run: |
+          set -euo pipefail
+          go generate ./internal/k8soperator
+          git diff --exit-code -- internal/k8soperator/manifests_generated.go
+
       - name: Check shell syntax
         shell: bash
         run: |

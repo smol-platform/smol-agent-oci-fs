@@ -1,10 +1,14 @@
 package k8soperator
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
+
+var safeVolumeIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
 
 type CommandPlan struct {
 	Steps []CommandStep `json:"steps"`
@@ -38,7 +42,7 @@ func PublishPlan(fs AgentOCIFileSystem, opts VolumePlanOptions) (CommandPlan, er
 	if volumeID == "" {
 		volumeID = fs.ObjectMeta.Name
 	}
-	workspace := filepath.Join(opts.WorkspaceRoot, safePathSegment(volumeID))
+	workspace := filepath.Join(opts.WorkspaceRoot, SafeVolumePathSegment(volumeID))
 	sourceRef := fs.Spec.SourceRef
 	plan := CommandPlan{Steps: []CommandStep{
 		{
@@ -295,11 +299,18 @@ func isRegistryRef(ref string) bool {
 }
 
 func safePathSegment(value string) string {
-	value = strings.TrimSpace(value)
-	value = strings.ReplaceAll(value, "/", "-")
-	value = strings.ReplaceAll(value, ":", "-")
-	if value == "" {
-		return "volume"
+	return SafeVolumePathSegment(value)
+}
+
+// SafeVolumePathSegment maps a CSI volume ID to one collision-resistant path
+// component. IDs already safe as a single component remain unchanged so
+// existing node workspaces continue to resolve after upgrades.
+func SafeVolumePathSegment(value string) string {
+	if safeVolumeIDPattern.MatchString(value) && value != "." && value != ".." {
+		return value
 	}
-	return value
+	sum := sha256.Sum256([]byte(value))
+	// Tilde is outside safeVolumeIDPattern, so unchanged safe IDs cannot
+	// collide with the encoded namespace.
+	return fmt.Sprintf("~volume-%x", sum[:16])
 }

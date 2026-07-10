@@ -131,6 +131,11 @@ func (r materializedRuntime) Mount(ctx context.Context, sourceRef string, target
 	if err := Restore(r.workspaceRoot, digest, target, RestoreOptions{Force: opts.Force, Decrypt: opts.Decrypt}); err != nil {
 		return MountInfo{}, err
 	}
+	if opts.ReadOnly {
+		if err := makeTreeReadOnly(target); err != nil {
+			return MountInfo{}, err
+		}
+	}
 	mountID, err := mountKey(target)
 	if err != nil {
 		return MountInfo{}, err
@@ -161,6 +166,22 @@ func (r materializedRuntime) Mount(ctx context.Context, sourceRef string, target
 
 func mountAllowsWrites(opts MountOptions) bool {
 	return !opts.ReadOnly
+}
+
+func makeTreeReadOnly(root string) error {
+	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		return os.Chmod(path, info.Mode().Perm()&^0o222)
+	})
 }
 
 func normalizeMountMode(mode MountMode) MountMode {

@@ -26,6 +26,47 @@ func TestFUSERuntimeIntegrationLinux(t *testing.T) {
 	testKernelRuntimeIntegration(t, MountFUSE)
 }
 
+func TestForceUnmountIsIdempotentForStaleOverlayAndFUSEMetadataLinux(t *testing.T) {
+	for _, mode := range []MountMode{MountOverlay, MountFUSE} {
+		t.Run(string(mode), func(t *testing.T) {
+			root := t.TempDir()
+			if _, err := Init(root, InitOptions{Base: "base", Name: "agent", StateRef: "local/agent", Mount: filepath.Join(root, "fs"), DefaultBranch: "main"}); err != nil {
+				t.Fatal(err)
+			}
+			s, err := findStore(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			target := filepath.Join(root, "target-"+string(mode))
+			runtimeRoot := filepath.Join(root, "runtime-"+string(mode))
+			upper := filepath.Join(runtimeRoot, "upper")
+			work := filepath.Join(runtimeRoot, "work")
+			lower := filepath.Join(runtimeRoot, "lower")
+			for _, dir := range []string{target, upper, work, lower} {
+				if err := os.MkdirAll(dir, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := s.writeMount(MountInfo{Target: absPath(target), Mode: mode, RW: true, UpperDir: upper, WorkDir: work, LowerDir: lower, State: "mounted", PID: os.Getpid(), CreatedAt: time.Now(), UpdatedAt: time.Now()}); err != nil {
+				t.Fatal(err)
+			}
+			runtime := NewMountRuntime(root, MountAuto)
+			for attempt := 0; attempt < 2; attempt++ {
+				if err := runtime.Unmount(context.Background(), target, UnmountOptions{Force: true}); err != nil {
+					t.Fatalf("force unmount attempt %d: %v", attempt+1, err)
+				}
+			}
+			status, err := runtime.Status(context.Background(), target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if status.State != "unmounted" {
+				t.Fatalf("force unmount did not persist unmounted state: %#v", status)
+			}
+		})
+	}
+}
+
 func TestLazyFUSEAutoSelectsNativeRuntimeIntegrationLinux(t *testing.T) {
 	if err := lazyFuseAvailable(); err != nil {
 		t.Skipf("native FUSE unavailable: %v", err)

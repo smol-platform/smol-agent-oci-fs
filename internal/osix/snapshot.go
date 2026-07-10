@@ -14,9 +14,16 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/klauspost/compress/zstd"
+)
+
+var (
+	restoreTargetLocks sync.Map
+	renameRestorePath  = os.Rename
+	signForPublication = SignSnapshot
 )
 
 func Snapshot(workspaceRoot, target string, opts SnapshotOptions) (SnapshotResult, error) {
@@ -84,6 +91,11 @@ func Snapshot(workspaceRoot, target string, opts SnapshotOptions) (SnapshotResul
 			typeChangeWhiteouts(parentTree, layerEntries),
 		)
 		dirtyBytes = dirtyBytesForEntries(layerEntries)
+		tree = mergeOverlayTree(parentTree, layerEntries, whiteouts)
+	}
+	tree, err = redactedSnapshotTree(target, tree)
+	if err != nil {
+		return SnapshotResult{}, err
 	}
 	layerData, err := makeLayer(layerRoot, layerEntries, whiteouts)
 	if err != nil {
@@ -207,23 +219,25 @@ func Snapshot(workspaceRoot, target string, opts SnapshotOptions) (SnapshotResul
 	}
 
 	tags := uniqueTags([]string{snapshotID, opts.Tag, opts.AlsoTag, "latest"})
-	for _, tag := range tags {
-		expected := ""
-		if opts.ExpectedParent != "" && tag != snapshotID {
-			expected = opts.ExpectedParent
-		}
-		if err := s.writeRefIfExpected(tag, manifestDesc.Digest, expected); err != nil {
-			return SnapshotResult{}, err
-		}
-	}
 	if opts.Sign != "" {
-		if _, err := SignSnapshot(workspaceRoot, manifestDesc.Digest, SignOptions{
+		if _, err := signForPublication(workspaceRoot, manifestDesc.Digest, SignOptions{
 			Signer:   opts.Sign,
 			Attest:   opts.Attest,
 			Sigstore: opts.Sigstore,
 		}); err != nil {
 			return SnapshotResult{}, err
 		}
+	}
+	updates := make([]refUpdate, 0, len(tags))
+	for _, tag := range tags {
+		expected := ""
+		if opts.ExpectedParent != "" && tag != snapshotID {
+			expected = opts.ExpectedParent
+		}
+		updates = append(updates, refUpdate{name: tag, digest: manifestDesc.Digest, expected: expected})
+	}
+	if err := s.writeRefsIfExpected(updates); err != nil {
+		return SnapshotResult{}, err
 	}
 	return SnapshotResult{ManifestDigest: manifestDesc.Digest, Tags: tags}, nil
 }
@@ -237,16 +251,55 @@ func Restore(workspaceRoot, ref, target string, opts RestoreOptions) error {
 	if err != nil {
 		return err
 	}
-	if err := ensureRestoreTarget(target, opts.Force); err != nil {
+	if err := validateRestoreTarget(target, opts.Force); err != nil {
 		return err
 	}
+	absTarget, err := filepath.Abs(target)
+	if err != nil {
+		return err
+	}
+	lockValue, _ := restoreTargetLocks.LoadOrStore(absTarget, &sync.Mutex{})
+	lock := lockValue.(*sync.Mutex)
+	lock.Lock()
+	defer lock.Unlock()
+	if err := recoverRestoreBackup(absTarget); err != nil {
+		return err
+	}
+	if err := validateRestoreTarget(absTarget, opts.Force); err != nil {
+		return err
+	}
+	stage, err := newRestoreStage(absTarget)
+	if err != nil {
+		return err
+	}
+	defer removeRestoreTree(stage)
+	if err := restoreIntoTarget(s, workspaceRoot, digest, cfg, stage, opts); err != nil {
+		return err
+	}
+	if err := writeReplayMarker(stage); err != nil {
+		return err
+	}
+	marker, err := readReplayMarker(stage)
+	if err != nil {
+		return err
+	}
+	if marker == nil || marker.Mode != "require-approval" {
+		return fmt.Errorf("restore replay marker was not persisted correctly")
+	}
+	if err := verifyRestoredTree(stage, cfg); err != nil {
+		return err
+	}
+	if err := os.Chmod(stage, 0o755); err != nil {
+		return err
+	}
+	return commitRestoreTarget(stage, absTarget)
+}
+
+func restoreIntoTarget(s store, workspaceRoot, digest string, cfg AgentConfig, target string, opts RestoreOptions) error {
 	if ok, err := canRestoreFromEncryptedLazyIndexes(s, digest, opts); err != nil {
 		return err
 	} else if ok {
-		if err := restoreFromSnapshotTree(s, workspaceRoot, digest, cfg.Tree, target, opts); err != nil {
-			return err
-		}
-		return writeReplayMarker(target)
+		return restoreFromSnapshotTree(s, workspaceRoot, digest, cfg.Tree, target, opts)
 	}
 	chain, err := s.snapshotChain(digest)
 	if err != nil {
@@ -275,7 +328,55 @@ func Restore(workspaceRoot, ref, target string, opts RestoreOptions) error {
 			return err
 		}
 	}
-	return writeReplayMarker(target)
+	return nil
+}
+
+func mergeOverlayTree(parent, changed []TreeEntry, whiteouts []string) []TreeEntry {
+	merged := treeMap(parent)
+	parentMap := treeMap(parent)
+	for _, target := range whiteouts {
+		for path := range merged {
+			if path == target || strings.HasPrefix(path, target+"/") {
+				delete(merged, path)
+			}
+		}
+	}
+	for _, entry := range changed {
+		merged[entry.Path] = entry
+		ancestor := filepath.ToSlash(filepath.Dir(entry.Path))
+		for ancestor != "." && ancestor != "" {
+			if _, exists := merged[ancestor]; !exists {
+				if parentEntry, ok := parentMap[ancestor]; ok && parentEntry.Type == "dir" {
+					merged[ancestor] = parentEntry
+				}
+			}
+			ancestor = filepath.ToSlash(filepath.Dir(ancestor))
+		}
+	}
+	result := make([]TreeEntry, 0, len(merged))
+	for _, entry := range merged {
+		result = append(result, entry)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Path < result[j].Path })
+	return result
+}
+
+func redactedSnapshotTree(root string, tree []TreeEntry) ([]TreeEntry, error) {
+	result := append([]TreeEntry(nil), tree...)
+	for i := range result {
+		entry := &result[i]
+		if entry.Type != "file" || !shouldRedact(entry.Path) {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(entry.Path)))
+		if err != nil {
+			return nil, err
+		}
+		redacted := redactLog(data)
+		entry.Size = int64(len(redacted))
+		entry.Digest = digestBytes(redacted)
+	}
+	return result, nil
 }
 
 func canRestoreFromEncryptedLazyIndexes(s store, digest string, opts RestoreOptions) (bool, error) {
@@ -1028,10 +1129,17 @@ func (s store) snapshotChain(digest string) ([]Manifest, error) {
 	return chain, nil
 }
 
-func ensureRestoreTarget(target string, force bool) error {
+func validateRestoreTarget(target string, force bool) error {
+	info, statErr := os.Lstat(target)
+	if statErr == nil && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("restore target %s must not be a symlink", target)
+	}
+	if statErr != nil && !os.IsNotExist(statErr) {
+		return statErr
+	}
 	entries, err := os.ReadDir(target)
 	if errors.Is(err, fs.ErrNotExist) {
-		return os.MkdirAll(target, 0o755)
+		return nil
 	}
 	if err != nil {
 		return err
@@ -1040,12 +1148,119 @@ func ensureRestoreTarget(target string, force bool) error {
 		if !force {
 			return fmt.Errorf("target %s is not empty; pass --force to replace it", target)
 		}
-		if err := os.RemoveAll(target); err != nil {
-			return err
-		}
-		return os.MkdirAll(target, 0o755)
 	}
 	return nil
+}
+
+func newRestoreStage(target string) (string, error) {
+	parent := filepath.Dir(target)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return "", err
+	}
+	prefix := "." + filepath.Base(target) + ".osix-restore-"
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		return "", err
+	}
+	cutoff := time.Now().Add(-24 * time.Hour)
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), prefix) {
+			continue
+		}
+		info, err := entry.Info()
+		if err == nil && info.ModTime().Before(cutoff) {
+			_ = removeRestoreTree(filepath.Join(parent, entry.Name()))
+		}
+	}
+	return os.MkdirTemp(parent, prefix)
+}
+
+func verifyRestoredTree(target string, cfg AgentConfig) error {
+	tree, _, err := scanTree(target)
+	if err != nil {
+		return err
+	}
+	want := cfg.Integrity.MTreeDigest
+	if want == "" {
+		want = digestTree(cfg.Tree)
+	}
+	if got := digestTree(tree); got != want {
+		return fmt.Errorf("restored tree digest mismatch: got %s want %s; changes=%v", got, want, diffTrees(cfg.Tree, tree))
+	}
+	return nil
+}
+
+func commitRestoreTarget(stage, target string) error {
+	_, statErr := os.Lstat(target)
+	if os.IsNotExist(statErr) {
+		return renameRestorePath(stage, target)
+	}
+	if statErr != nil {
+		return statErr
+	}
+	backup := filepath.Join(filepath.Dir(target), "."+filepath.Base(target)+".osix-backup")
+	if err := removeRestoreTree(backup); err != nil {
+		return err
+	}
+	if err := renameRestorePath(target, backup); err != nil {
+		return err
+	}
+	if err := renameRestorePath(stage, target); err != nil {
+		if rollbackErr := os.Rename(backup, target); rollbackErr != nil {
+			return errors.Join(err, fmt.Errorf("restore original target: %w", rollbackErr))
+		}
+		return err
+	}
+	return removeRestoreTree(backup)
+}
+
+func recoverRestoreBackup(target string) error {
+	backup := filepath.Join(filepath.Dir(target), "."+filepath.Base(target)+".osix-backup")
+	_, targetErr := os.Lstat(target)
+	_, backupErr := os.Lstat(backup)
+	if os.IsNotExist(backupErr) {
+		return nil
+	}
+	if backupErr != nil {
+		return backupErr
+	}
+	if os.IsNotExist(targetErr) {
+		return os.Rename(backup, target)
+	}
+	if targetErr != nil {
+		return targetErr
+	}
+	return removeRestoreTree(backup)
+}
+
+func removeRestoreTree(path string) error {
+	if _, err := os.Lstat(path); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	if err := filepath.WalkDir(path, func(current string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		mode := fs.FileMode(0o600)
+		if entry.IsDir() {
+			mode = 0o700
+		}
+		return os.Chmod(current, mode)
+	}); err != nil {
+		return err
+	}
+	return os.RemoveAll(path)
+}
+
+// ensureRestoreTarget remains as the compatibility validation helper used by
+// older internal callers and tests. Restore itself now stages before commit.
+func ensureRestoreTarget(target string, force bool) error {
+	return validateRestoreTarget(target, force)
 }
 
 func treeMap(entries []TreeEntry) map[string]TreeEntry {

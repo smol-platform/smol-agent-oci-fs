@@ -178,6 +178,50 @@ func TestMountRuntimeMaterializedStatusUnmountRecover(t *testing.T) {
 	}
 }
 
+func TestMaterializedReadOnlyMountRemovesWritePermissions(t *testing.T) {
+	root := t.TempDir()
+	if _, err := Init(root, InitOptions{Base: "base", Name: "agent", StateRef: "local/agent", Mount: filepath.Join(root, "fs"), DefaultBranch: "main"}); err != nil {
+		t.Fatal(err)
+	}
+	fsRoot := filepath.Join(root, "fs")
+	mustWrite(t, filepath.Join(fsRoot, "agent", "workspace", "file.txt"), "v1\n")
+	if _, err := Snapshot(root, fsRoot, SnapshotOptions{Tag: "snap-ro"}); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "read-only")
+	t.Cleanup(func() {
+		_ = filepath.WalkDir(target, func(path string, entry os.DirEntry, err error) error {
+			if err == nil && entry.Type()&os.ModeSymlink == 0 {
+				_ = os.Chmod(path, 0o700)
+			}
+			return nil
+		})
+	})
+	info, err := NewMountRuntime(root, MountMaterialized).Mount(context.Background(), "snap-ro", target, MountOptions{Force: true, ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.RW {
+		t.Fatalf("read-only mount reported writable: %#v", info)
+	}
+	err = filepath.WalkDir(target, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || entry.Type()&os.ModeSymlink != 0 {
+			return err
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if info.Mode().Perm()&0o222 != 0 {
+			t.Errorf("read-only path remains writable: %s mode=%o", path, info.Mode().Perm())
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestExplicitUnavailableMountModesReturnErrors(t *testing.T) {
 	root := t.TempDir()
 	if _, err := Init(root, InitOptions{

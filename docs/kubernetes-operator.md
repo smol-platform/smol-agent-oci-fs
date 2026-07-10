@@ -48,7 +48,7 @@ The current implementation provides:
 Build and publish images:
 
 ```sh
-OSIX_RELEASE_VERSION=v0.1.2 scripts/release-k8s-images.sh
+OSIX_RELEASE_VERSION=v0.1.3 scripts/release-k8s-images.sh
 ```
 
 Install manifests:
@@ -62,6 +62,17 @@ For a rendered manifest stream:
 ```sh
 go run ./cmd/osix-k8s-operator render-install | kubectl apply -f -
 ```
+
+The files under `deploy/kubernetes` are the canonical install source. After
+changing the Kustomize resources or their order, regenerate the embedded
+single-stream form with:
+
+```sh
+go generate ./internal/k8soperator
+```
+
+CI reruns this command and rejects generated-manifest drift, so the Kustomize
+and `render-install` paths contain the same resources and hardened settings.
 
 Private image registries need an image pull secret:
 
@@ -91,8 +102,8 @@ For a live gtr-provisioned cluster, first select the gtr kubeconfig/context and
 publish release images, then run:
 
 ```sh
-OSIX_OPERATOR_IMAGE=ghcr.io/smol-platform/smol-agent-oci-fs-operator:v0.1.2 \
-OSIX_CSI_IMAGE=ghcr.io/smol-platform/smol-agent-oci-fs-csi:v0.1.2 \
+OSIX_OPERATOR_IMAGE=ghcr.io/smol-platform/smol-agent-oci-fs-operator:v0.1.3 \
+OSIX_CSI_IMAGE=ghcr.io/smol-platform/smol-agent-oci-fs-csi:v0.1.3 \
 OSIX_GTR_STATE_REF=ghcr.io/acme/osix-autosnap-live \
 OSIX_GTR_REGISTRY_SECRET=osix-registry-auth \
 scripts/test-k8s-autosnap-gtr.sh

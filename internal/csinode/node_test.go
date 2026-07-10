@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -115,6 +116,172 @@ func TestNodePublishPersistsMountRecordAndUnpublishRemoves(t *testing.T) {
 	}
 	if _, err := node.readMountRecord("pvc-record"); !os.IsNotExist(err) {
 		t.Fatalf("mount record should be removed, err=%v", err)
+	}
+}
+
+func TestNodeWorkspaceMappingContainsUnsafeVolumeIDs(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "workspaces")
+	node := Node{WorkspaceRoot: root}
+	fs := testFileSystem("agent-path")
+	seen := map[string]string{}
+	for _, id := range []string{".", "..", "a/b", "a:b", "a-b", "日本語"} {
+		workspace, err := node.workspaceFor(id, fs)
+		if err != nil {
+			t.Fatalf("workspaceFor(%q): %v", id, err)
+		}
+		rel, err := filepath.Rel(root, workspace)
+		if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			t.Fatalf("volume ID %q escaped workspace root as %q", id, workspace)
+		}
+		if previous, ok := seen[workspace]; ok {
+			t.Fatalf("volume IDs %q and %q collide at %q", previous, id, workspace)
+		}
+		seen[workspace] = id
+	}
+}
+
+func TestNodeRepublishReconcilesMutableWorkspaceConfiguration(t *testing.T) {
+	root := t.TempDir()
+	node := Node{WorkspaceRoot: filepath.Join(root, "workspaces")}
+	fs := testFileSystem("agent-republish")
+	first, err := node.Publish(context.Background(), PublishRequest{FileSystem: fs, VolumeID: "pvc-republish", TargetPath: filepath.Join(root, "first")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := fs
+	updated.Spec.StateRef = "registry.example/agents/reconfigured"
+	updated.Spec.Branch = "next"
+	updated.Spec.Encryption = &k8soperator.EncryptionSpec{Recipients: "gpg:test-recipient"}
+	if err := os.RemoveAll(filepath.Join(node.WorkspaceRoot, "csi")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(node.WorkspaceRoot, "csi"), []byte("block record directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := node.Publish(context.Background(), PublishRequest{FileSystem: updated, VolumeID: "pvc-republish", TargetPath: filepath.Join(root, "failed-second")}); err == nil {
+		t.Fatal("expected mount-record persistence failure")
+	}
+	cfg, err := osix.Workspace(first.Workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.StateRef != fs.Spec.StateRef || cfg.DefaultBranch != fs.Spec.Branch || cfg.Encrypt != "" {
+		t.Fatalf("workspace config advanced despite mount-record failure: %#v", cfg)
+	}
+	if err := os.Remove(filepath.Join(node.WorkspaceRoot, "csi")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := node.Publish(context.Background(), PublishRequest{FileSystem: updated, VolumeID: "pvc-republish", TargetPath: filepath.Join(root, "second")}); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = osix.Workspace(first.Workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.StateRef != updated.Spec.StateRef || cfg.DefaultBranch != "next" || cfg.Encrypt != "gpg:test-recipient" || cfg.Mount != filepath.Join(root, "second") {
+		t.Fatalf("workspace config not reconciled: %#v", cfg)
+	}
+	if _, err := osix.ReconfigureWorkspace(first.Workspace, osix.InitOptions{Base: fs.Spec.BaseImage, Name: fs.ObjectMeta.Name, StateRef: fs.Spec.StateRef, Mount: filepath.Join(root, "first"), DefaultBranch: fs.Spec.Branch}); err != nil {
+		t.Fatal(err)
+	}
+	record, err := node.readMountRecord("pvc-republish")
+	if err != nil {
+		t.Fatal(err)
+	}
+	restartedNode := Node{WorkspaceRoot: node.WorkspaceRoot}
+	if _, err := restartedNode.Snapshot(context.Background(), SnapshotRequest{FileSystem: record.FileSystem, Policy: &k8soperator.AgentOCISnapshotPolicySpec{Push: false}, VolumeID: record.VolumeID, TargetPath: record.TargetPath}); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = osix.Workspace(first.Workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.StateRef != updated.Spec.StateRef || cfg.DefaultBranch != "next" || cfg.Encrypt != "gpg:test-recipient" {
+		t.Fatalf("restarted snapshot worker did not reconcile workspace config: %#v", cfg)
+	}
+	incompatible := updated
+	incompatible.Spec.BaseImage = "different-base"
+	if _, err := node.Publish(context.Background(), PublishRequest{FileSystem: incompatible, VolumeID: "pvc-republish", TargetPath: filepath.Join(root, "third")}); err == nil {
+		t.Fatal("expected immutable base change to fail")
+	}
+	incompatible = updated
+	incompatible.ObjectMeta.Name = "different-agent"
+	if _, err := node.Publish(context.Background(), PublishRequest{FileSystem: incompatible, VolumeID: "pvc-republish", TargetPath: filepath.Join(root, "third")}); err == nil {
+		t.Fatal("expected immutable name change to fail")
+	}
+}
+
+func TestWorkerStopAndWaitJoinsInFlightSnapshot(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	fs := testFileSystem("agent-join")
+	started := make(chan struct{})
+	release := make(chan struct{})
+	node := Node{WorkspaceRoot: filepath.Join(root, "workspaces")}
+	if _, err := node.Publish(context.Background(), PublishRequest{FileSystem: fs, VolumeID: "pvc-join", TargetPath: target, AutoSnapshot: true, Policy: &k8soperator.AgentOCISnapshotPolicySpec{Every: "10ms", Push: false}}); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(target, "agent", "workspace", "file.txt"), "dirty\n")
+	node.snapshotHook = func(context.Context, SnapshotRequest) (SnapshotResult, error) {
+		close(started)
+		<-release
+		return SnapshotResult{}, nil
+	}
+	manager := NewWorkerManager(node, FileReporter{Root: filepath.Join(root, "reports")})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := manager.StartRecord(ctx, "pvc-join"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker did not enter snapshot")
+	}
+	timeoutCtx, timeoutCancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer timeoutCancel()
+	if err := manager.stopAndWait(timeoutCtx, "pvc-join"); err == nil {
+		t.Fatal("bounded stopAndWait should return its context deadline while snapshot is blocked")
+	}
+	if err := manager.StartRecord(ctx, "pvc-join"); err != nil {
+		t.Fatal(err)
+	}
+	if manager.ActiveWorkers() != 1 {
+		t.Fatalf("replacement worker overlapped canceled worker: %d active", manager.ActiveWorkers())
+	}
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- manager.stopAndWait(context.Background(), "pvc-join") }()
+	select {
+	case err := <-waitDone:
+		t.Fatalf("stopAndWait returned before snapshot exited: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	if err := <-waitDone; err != nil {
+		t.Fatal(err)
+	}
+	if manager.ActiveWorkers() != 0 {
+		t.Fatalf("worker remains active after join: %d", manager.ActiveWorkers())
+	}
+	restarted := make(chan struct{})
+	releaseRestarted := make(chan struct{})
+	manager.Node.snapshotHook = func(context.Context, SnapshotRequest) (SnapshotResult, error) {
+		close(restarted)
+		<-releaseRestarted
+		return SnapshotResult{}, nil
+	}
+	if err := manager.StartRecord(ctx, "pvc-join"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-restarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("replacement worker did not start after canceled worker exited")
+	}
+	manager.stop("pvc-join")
+	close(releaseRestarted)
+	if err := manager.stopAndWait(context.Background(), "pvc-join"); err != nil {
+		t.Fatal(err)
 	}
 }
 

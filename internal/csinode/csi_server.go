@@ -10,6 +10,7 @@ import (
 
 	csi "github.com/container-storage-interface/spec/lib/go/csi"
 	"github.com/smol-platform/smol-agent-oci-fs/internal/k8soperator"
+	"github.com/smol-platform/smol-agent-oci-fs/internal/osix"
 	"google.golang.org/grpc"
 )
 
@@ -77,7 +78,7 @@ func ServeCSI(ctx context.Context, node Node, opts CSIServerOptions) error {
 }
 
 func (s *CSIServer) GetPluginInfo(ctx context.Context, req *csi.GetPluginInfoRequest) (*csi.GetPluginInfoResponse, error) {
-	return &csi.GetPluginInfoResponse{Name: DriverName, VendorVersion: "v0.1.0"}, nil
+	return &csi.GetPluginInfoResponse{Name: DriverName, VendorVersion: "v" + osix.Version}, nil
 }
 
 func (s *CSIServer) GetPluginCapabilities(ctx context.Context, req *csi.GetPluginCapabilitiesRequest) (*csi.GetPluginCapabilitiesResponse, error) {
@@ -109,12 +110,16 @@ func (s *CSIServer) NodePublishVolume(ctx context.Context, req *csi.NodePublishV
 	if err != nil {
 		return nil, err
 	}
+	if req.GetReadonly() && autoSnapshot {
+		return nil, fmt.Errorf("read-only volumes cannot enable autosnapshot")
+	}
 	if _, err := s.Node.Publish(ctx, PublishRequest{
 		FileSystem:   fs,
 		Policy:       policy,
 		VolumeID:     req.GetVolumeId(),
 		TargetPath:   req.GetTargetPath(),
 		AutoSnapshot: autoSnapshot,
+		ReadOnly:     req.GetReadonly(),
 	}); err != nil {
 		return nil, err
 	}
@@ -131,26 +136,37 @@ func (s *CSIServer) NodePublishVolume(ctx context.Context, req *csi.NodePublishV
 }
 
 func (s *CSIServer) NodeUnpublishVolume(ctx context.Context, req *csi.NodeUnpublishVolumeRequest) (*csi.NodeUnpublishVolumeResponse, error) {
-	record, _ := s.Node.readMountRecord(req.GetVolumeId())
+	if req.GetVolumeId() == "" {
+		return nil, fmt.Errorf("volume id is required")
+	}
+	if req.GetTargetPath() == "" {
+		return nil, fmt.Errorf("target path is required")
+	}
+	record, recordErr := s.Node.readMountRecord(req.GetVolumeId())
 	if s.manager != nil {
-		s.manager.stop(req.GetVolumeId())
+		if err := s.manager.stopAndWait(ctx, req.GetVolumeId()); err != nil {
+			return nil, err
+		}
 	}
 	if record.VolumeID != "" {
 		if err := s.Node.Unpublish(ctx, PublishRequest{
 			FileSystem: record.FileSystem,
 			Policy:     record.Policy,
 			VolumeID:   record.VolumeID,
-			TargetPath: record.TargetPath,
+			TargetPath: req.GetTargetPath(),
 		}, record.AutoSnapshot); err != nil {
 			return nil, err
 		}
 		return &csi.NodeUnpublishVolumeResponse{}, nil
 	}
-	if req.GetTargetPath() == "" {
-		return nil, fmt.Errorf("target path is required")
-	}
-	if err := s.Node.removeMountRecord(req.GetVolumeId()); err != nil {
+	if err := s.Node.Unpublish(ctx, PublishRequest{
+		VolumeID:   req.GetVolumeId(),
+		TargetPath: req.GetTargetPath(),
+	}, false); err != nil {
 		return nil, err
+	}
+	if recordErr != nil && !os.IsNotExist(recordErr) {
+		return nil, fmt.Errorf("mount record unreadable; target was cleaned: %w", recordErr)
 	}
 	return &csi.NodeUnpublishVolumeResponse{}, nil
 }
