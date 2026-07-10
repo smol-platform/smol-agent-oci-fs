@@ -18,6 +18,7 @@ type MountRecord struct {
 	FileSystem    k8soperator.AgentOCIFileSystem          `json:"fileSystem"`
 	Policy        *k8soperator.AgentOCISnapshotPolicySpec `json:"policy,omitempty"`
 	AutoSnapshot  bool                                    `json:"autoSnapshot"`
+	ReadOnly      bool                                    `json:"readOnly,omitempty"`
 	PublishedAt   time.Time                               `json:"publishedAt"`
 	UpdatedAt     time.Time                               `json:"updatedAt"`
 }

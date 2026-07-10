@@ -3,7 +3,7 @@ package osix
 import "time"
 
 const (
-	Version = "0.1"
+	Version = "0.1.3"
 
 	MediaTypeOCIManifest         = "application/vnd.oci.image.manifest.v1+json"
 	MediaTypeOCIIndex            = "application/vnd.oci.image.index.v1+json"

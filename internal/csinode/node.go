@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/smol-platform/smol-agent-oci-fs/internal/k8soperator"
 	"github.com/smol-platform/smol-agent-oci-fs/internal/osix"
@@ -14,6 +15,7 @@ import (
 type Node struct {
 	WorkspaceRoot  string
 	SecretProvider SecretProvider
+	snapshotHook   func(context.Context, SnapshotRequest) (SnapshotResult, error)
 }
 
 type PublishRequest struct {
@@ -22,6 +24,7 @@ type PublishRequest struct {
 	VolumeID     string
 	TargetPath   string
 	AutoSnapshot bool
+	ReadOnly     bool
 }
 
 type PublishResult struct {
@@ -51,7 +54,14 @@ type SnapshotDecision struct {
 	ChangeCount      int   `json:"changeCount"`
 }
 
-func (n Node) Publish(ctx context.Context, req PublishRequest) (PublishResult, error) {
+var volumeSnapshotLocks sync.Map
+
+func volumeSnapshotLock(workspace string) *sync.Mutex {
+	lock, _ := volumeSnapshotLocks.LoadOrStore(filepath.Clean(workspace), &sync.Mutex{})
+	return lock.(*sync.Mutex)
+}
+
+func (n Node) Publish(ctx context.Context, req PublishRequest) (result PublishResult, retErr error) {
 	nodeMetrics.publishTotal.Add(1)
 	fs := k8soperator.NormalizeFileSystem(req.FileSystem)
 	if err := k8soperator.ValidateFileSystem(fs); err != nil {
@@ -63,10 +73,22 @@ func (n Node) Publish(ctx context.Context, req PublishRequest) (PublishResult, e
 	if strings.TrimSpace(req.TargetPath) == "" {
 		return PublishResult{}, fmt.Errorf("target path is required")
 	}
-	workspace := n.workspaceFor(req.VolumeID, fs)
+	workspace, err := n.workspaceFor(req.VolumeID, fs)
+	if err != nil {
+		return PublishResult{}, err
+	}
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
 		return PublishResult{}, err
 	}
+	var previousConfig *osix.WorkspaceConfig
+	rollbackConfig := false
+	defer func() {
+		if retErr != nil && rollbackConfig && previousConfig != nil {
+			if rollbackErr := osix.ReplaceWorkspaceConfig(workspace, *previousConfig); rollbackErr != nil {
+				retErr = fmt.Errorf("%w; roll back workspace config: %v", retErr, rollbackErr)
+			}
+		}
+	}()
 	if _, err := os.Stat(filepath.Join(workspace, ".osix")); os.IsNotExist(err) {
 		if _, err := osix.Init(workspace, osix.InitOptions{
 			Base:          fs.Spec.BaseImage,
@@ -80,6 +102,19 @@ func (n Node) Publish(ctx context.Context, req PublishRequest) (PublishResult, e
 		}
 	} else if err != nil {
 		return PublishResult{}, err
+	} else {
+		cfg, err := osix.Workspace(workspace)
+		if err != nil {
+			return PublishResult{}, err
+		}
+		previousConfig = &cfg
+		if _, err := osix.ReconfigureWorkspace(workspace, osix.InitOptions{
+			Base: fs.Spec.BaseImage, Name: fs.ObjectMeta.Name, StateRef: fs.Spec.StateRef,
+			Mount: req.TargetPath, DefaultBranch: fs.Spec.Branch, Encrypt: encryptionRecipients(fs),
+		}); err != nil {
+			return PublishResult{}, err
+		}
+		rollbackConfig = true
 	}
 	sourceRef := fs.Spec.SourceRef
 	if sourceRef == "" {
@@ -102,15 +137,21 @@ func (n Node) Publish(ctx context.Context, req PublishRequest) (PublishResult, e
 	}
 	if hasLocalRef(workspace, sourceRef) {
 		if _, err := osix.Mount(workspace, sourceRef, req.TargetPath, osix.MountOptions{
-			Force:  true,
-			RW:     true,
-			Branch: fs.Spec.Branch,
-			Mode:   osix.MountMode(fs.Spec.MountMode),
+			Force:    true,
+			RW:       !req.ReadOnly,
+			ReadOnly: req.ReadOnly,
+			Branch:   fs.Spec.Branch,
+			Mode:     osix.MountMode(fs.Spec.MountMode),
 		}); err != nil {
 			return PublishResult{}, err
 		}
-	} else if err := os.MkdirAll(filepath.Join(req.TargetPath, "agent", "workspace"), 0o755); err != nil {
-		return PublishResult{}, err
+	} else {
+		if req.ReadOnly {
+			return PublishResult{}, fmt.Errorf("read-only publish requires an existing source snapshot")
+		}
+		if err := os.MkdirAll(filepath.Join(req.TargetPath, "agent", "workspace"), 0o755); err != nil {
+			return PublishResult{}, err
+		}
 	}
 	volumeID := req.VolumeID
 	if volumeID == "" {
@@ -123,15 +164,32 @@ func (n Node) Publish(ctx context.Context, req PublishRequest) (PublishResult, e
 		FileSystem:    fs,
 		Policy:        req.Policy,
 		AutoSnapshot:  req.AutoSnapshot,
+		ReadOnly:      req.ReadOnly,
 	}); err != nil {
 		return PublishResult{}, err
 	}
+	rollbackConfig = false
 	return PublishResult{Workspace: workspace, Target: req.TargetPath, SourceRef: sourceRef, Mode: fs.Spec.MountMode}, nil
 }
 
 func (n Node) Snapshot(ctx context.Context, req SnapshotRequest) (SnapshotResult, error) {
 	fs := k8soperator.NormalizeFileSystem(req.FileSystem)
-	workspace := n.workspaceFor(req.VolumeID, fs)
+	workspace, err := n.workspaceFor(req.VolumeID, fs)
+	if err != nil {
+		return SnapshotResult{}, err
+	}
+	lock := volumeSnapshotLock(workspace)
+	lock.Lock()
+	defer lock.Unlock()
+	if _, err := osix.ReconfigureWorkspace(workspace, osix.InitOptions{
+		Base: fs.Spec.BaseImage, Name: fs.ObjectMeta.Name, StateRef: fs.Spec.StateRef,
+		Mount: req.TargetPath, DefaultBranch: fs.Spec.Branch, Encrypt: encryptionRecipients(fs),
+	}); err != nil {
+		return SnapshotResult{}, err
+	}
+	if n.snapshotHook != nil {
+		return n.snapshotHook(ctx, req)
+	}
 	policy := k8soperator.AgentOCISnapshotPolicySpec{Push: true}
 	if req.Policy != nil {
 		policy = *req.Policy
@@ -188,7 +246,10 @@ func (n Node) Snapshot(ctx context.Context, req SnapshotRequest) (SnapshotResult
 
 func (n Node) SnapshotNeeded(req SnapshotRequest) (SnapshotDecision, error) {
 	fs := k8soperator.NormalizeFileSystem(req.FileSystem)
-	workspace := n.workspaceFor(req.VolumeID, fs)
+	workspace, err := n.workspaceFor(req.VolumeID, fs)
+	if err != nil {
+		return SnapshotDecision{}, err
+	}
 	summary, err := osix.TargetChanges(workspace, req.TargetPath, fs.Spec.Branch)
 	if err != nil {
 		return SnapshotDecision{}, err
@@ -227,7 +288,10 @@ func (n Node) Unpublish(ctx context.Context, req PublishRequest, finalSnapshot b
 			return err
 		}
 	}
-	workspace := n.workspaceFor(req.VolumeID, k8soperator.NormalizeFileSystem(req.FileSystem))
+	workspace, err := n.workspaceFor(req.VolumeID, k8soperator.NormalizeFileSystem(req.FileSystem))
+	if err != nil {
+		return err
+	}
 	if err := osix.NewMountRuntime(workspace, osix.MountAuto).Unmount(ctx, req.TargetPath, osix.UnmountOptions{Force: true}); err != nil && !strings.Contains(err.Error(), "no such file") {
 		return err
 	}
@@ -302,13 +366,26 @@ func (n Node) verifyOptions(ctx context.Context, fs k8soperator.AgentOCIFileSyst
 	return opts, cleanup, nil
 }
 
-func (n Node) workspaceFor(volumeID string, fs k8soperator.AgentOCIFileSystem) string {
+func (n Node) workspaceFor(volumeID string, fs k8soperator.AgentOCIFileSystem) (string, error) {
 	if volumeID == "" {
 		volumeID = fs.ObjectMeta.Name
 	}
-	volumeID = strings.ReplaceAll(volumeID, "/", "-")
-	volumeID = strings.ReplaceAll(volumeID, ":", "-")
-	return filepath.Join(n.WorkspaceRoot, volumeID)
+	if volumeID == "" {
+		return "", fmt.Errorf("volume id is required")
+	}
+	root, err := filepath.Abs(n.WorkspaceRoot)
+	if err != nil {
+		return "", err
+	}
+	workspace := filepath.Join(root, k8soperator.SafeVolumePathSegment(volumeID))
+	rel, err := filepath.Rel(root, workspace)
+	if err != nil || rel == "." || rel == ".." || filepath.IsAbs(rel) || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		if err == nil {
+			err = fmt.Errorf("resolved workspace %q escapes workspace root", workspace)
+		}
+		return "", err
+	}
+	return workspace, nil
 }
 
 func encryptionRecipients(fs k8soperator.AgentOCIFileSystem) string {

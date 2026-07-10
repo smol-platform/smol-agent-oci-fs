@@ -88,9 +88,25 @@ func overlayMount(ctx context.Context, workspaceRoot, sourceRef, target string, 
 		return MountInfo{}, err
 	}
 	options := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", lower, upper, work)
-	if err := unix.Mount("overlay", target, "overlay", 0, options); err != nil {
+	mountSource := "overlay"
+	mountType := "overlay"
+	flags := uintptr(0)
+	if opts.ReadOnly {
+		mountSource = lower
+		mountType = ""
+		options = ""
+		flags = unix.MS_BIND | unix.MS_REC
+	}
+	if err := unix.Mount(mountSource, target, mountType, flags, options); err != nil {
 		cleanupFreshKernelMountDirs(root, rootExisted)
 		return MountInfo{}, fmt.Errorf("overlay mount: %w", err)
+	}
+	if opts.ReadOnly {
+		if err := unix.Mount("", target, "", unix.MS_BIND|unix.MS_REMOUNT|unix.MS_RDONLY, ""); err != nil {
+			_ = unix.Unmount(target, 0)
+			cleanupFreshKernelMountDirs(root, rootExisted)
+			return MountInfo{}, fmt.Errorf("remount read-only bind: %w", err)
+		}
 	}
 	info := MountInfo{
 		Target:       absPath(target),
@@ -143,7 +159,11 @@ func fuseMount(ctx context.Context, workspaceRoot, sourceRef, target string, opt
 		cleanupFreshKernelMountDirs(root, rootExisted)
 		return MountInfo{}, err
 	}
-	cmd := exec.CommandContext(ctx, "fuse-overlayfs", "-o", fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", lower, upper, work), target)
+	options := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", lower, upper, work)
+	if opts.ReadOnly {
+		options = fmt.Sprintf("ro,lowerdir=%s", lower)
+	}
+	cmd := exec.CommandContext(ctx, "fuse-overlayfs", "-o", options, target)
 	if err := cmd.Start(); err != nil {
 		cleanupFreshKernelMountDirs(root, rootExisted)
 		return MountInfo{}, fmt.Errorf("start fuse-overlayfs: %w", err)

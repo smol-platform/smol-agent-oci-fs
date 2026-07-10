@@ -1,6 +1,8 @@
 package k8soperator
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -84,6 +86,34 @@ func TestPublishAndSnapshotPlans(t *testing.T) {
 	}
 }
 
+func TestSafeVolumePathSegmentContainsAndSeparatesUnsafeIDs(t *testing.T) {
+	root := t.TempDir()
+	ids := []string{".", "..", "a/b", "a:b", "a-b", "日本語", ""}
+	seen := map[string]string{}
+	for _, id := range ids {
+		segment := SafeVolumePathSegment(id)
+		if segment == "." || segment == ".." || strings.ContainsAny(segment, `/\\`) {
+			t.Fatalf("unsafe segment %q for volume ID %q", segment, id)
+		}
+		if previous, ok := seen[segment]; ok {
+			t.Fatalf("volume IDs %q and %q collide as %q", previous, id, segment)
+		}
+		seen[segment] = id
+		path := filepath.Join(root, segment)
+		rel, err := filepath.Rel(root, path)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			t.Fatalf("volume ID %q escaped root as %q: %v", id, path, err)
+		}
+	}
+	if got := SafeVolumePathSegment("pvc-existing"); got != "pvc-existing" {
+		t.Fatalf("safe existing ID remapped to %q", got)
+	}
+	encoded := SafeVolumePathSegment("a/b")
+	if got := SafeVolumePathSegment(encoded); got == encoded {
+		t.Fatalf("encoded namespace collides with unchanged safe ID %q", encoded)
+	}
+}
+
 func TestValidateFileSystemAndRenderInstall(t *testing.T) {
 	if err := ValidateFileSystem(AgentOCIFileSystem{}); err == nil {
 		t.Fatal("expected validation error")
@@ -101,6 +131,43 @@ func TestValidateFileSystemAndRenderInstall(t *testing.T) {
 	} {
 		if !strings.Contains(manifest, want) {
 			t.Fatalf("install manifest missing %q", want)
+		}
+	}
+}
+
+func TestRenderedInstallMatchesCanonicalKustomizeResources(t *testing.T) {
+	deployRoot := filepath.Join("..", "..", "deploy", "kubernetes")
+	kustomization, err := os.ReadFile(filepath.Join(deployRoot, "kustomization.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	inResources := false
+	var parts []string
+	for _, line := range strings.Split(string(kustomization), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "resources:" {
+			inResources = true
+			continue
+		}
+		if !inResources {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "-") {
+			resource := strings.TrimSpace(strings.TrimPrefix(trimmed, "-"))
+			data, err := os.ReadFile(filepath.Join(deployRoot, filepath.FromSlash(resource)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			parts = append(parts, strings.TrimSpace(string(data)))
+		}
+	}
+	want := strings.Join(parts, "\n---\n") + "\n"
+	if got := RenderInstallManifests(); got != want {
+		t.Fatal("generated render-install stream drifted from deploy/kubernetes resources; run go generate ./internal/k8soperator")
+	}
+	for _, hardened := range []string{"allowPrivilegeEscalation: false", "readOnlyRootFilesystem: true", "imagePullPolicy: IfNotPresent"} {
+		if !strings.Contains(want, hardened) {
+			t.Fatalf("canonical install stream lost hardened setting %q", hardened)
 		}
 	}
 }

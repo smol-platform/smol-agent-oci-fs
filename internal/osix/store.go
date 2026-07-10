@@ -11,9 +11,21 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 )
 
 const osixDirName = ".osix"
+
+var (
+	refTransactionLocks sync.Map
+	renameRefFile       = os.Rename
+)
+
+type refUpdate struct {
+	name     string
+	digest   string
+	expected string
+}
 
 func Init(root string, opts InitOptions) (WorkspaceConfig, error) {
 	if opts.DefaultBranch == "" {
@@ -64,6 +76,51 @@ func Workspace(workspaceRoot string) (WorkspaceConfig, error) {
 		return WorkspaceConfig{}, err
 	}
 	return readWorkspaceConfig(s.configPath())
+}
+
+// ReconfigureWorkspace updates the mutable binding settings of an existing
+// workspace while rejecting identity changes that could splice unrelated
+// snapshot histories together.
+func ReconfigureWorkspace(workspaceRoot string, opts InitOptions) (WorkspaceConfig, error) {
+	s, err := findStore(workspaceRoot)
+	if err != nil {
+		return WorkspaceConfig{}, err
+	}
+	cfg, err := readWorkspaceConfig(s.configPath())
+	if err != nil {
+		return WorkspaceConfig{}, err
+	}
+	if opts.Name != "" && cfg.Name != "" && opts.Name != cfg.Name {
+		return WorkspaceConfig{}, fmt.Errorf("workspace name is immutable: have %q, requested %q", cfg.Name, opts.Name)
+	}
+	if opts.Base != "" && cfg.Base != "" && opts.Base != cfg.Base {
+		return WorkspaceConfig{}, fmt.Errorf("workspace base is immutable: have %q, requested %q", cfg.Base, opts.Base)
+	}
+	if opts.StateRef != "" {
+		cfg.StateRef = opts.StateRef
+	}
+	if opts.Mount != "" {
+		cfg.Mount = opts.Mount
+	}
+	if opts.DefaultBranch != "" {
+		cfg.DefaultBranch = opts.DefaultBranch
+	}
+	cfg.Encrypt = opts.Encrypt
+	if err := writeWorkspaceConfig(s.configPath(), cfg); err != nil {
+		return WorkspaceConfig{}, err
+	}
+	return cfg, nil
+}
+
+// ReplaceWorkspaceConfig restores an already validated workspace config. It
+// is used by higher-level publish transactions to roll back a failed binding
+// update.
+func ReplaceWorkspaceConfig(workspaceRoot string, cfg WorkspaceConfig) error {
+	s, err := findStore(workspaceRoot)
+	if err != nil {
+		return err
+	}
+	return writeWorkspaceConfig(s.configPath(), cfg)
 }
 
 type store struct {
@@ -209,32 +266,100 @@ func (s store) readRemoteBlobSource(digest string) (remoteBlobSource, error) {
 }
 
 func (s store) writeRef(name, digest string) error {
-	if strings.TrimSpace(name) == "" {
-		return nil
-	}
-	if _, err := digestHex(digest); err != nil {
-		return err
-	}
-	path := filepath.Join(s.refsRoot(), safeRefName(name))
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(path, []byte(digest+"\n"), 0o644)
+	return s.writeRefsIfExpected([]refUpdate{{name: name, digest: digest}})
 }
 
 func (s store) writeRefIfExpected(name, digest, expected string) error {
-	if strings.TrimSpace(expected) == "" {
-		return s.writeRef(name, digest)
+	return s.writeRefsIfExpected([]refUpdate{{name: name, digest: digest, expected: expected}})
+}
+
+func (s store) writeRefsIfExpected(updates []refUpdate) error {
+	lockValue, _ := refTransactionLocks.LoadOrStore(s.refsRoot(), &sync.Mutex{})
+	lock := lockValue.(*sync.Mutex)
+	lock.Lock()
+	defer lock.Unlock()
+
+	type savedRef struct {
+		path   string
+		data   []byte
+		exists bool
+		tmp    string
 	}
-	current, err := s.resolveRef(name)
-	if err != nil {
-		if !errors.Is(err, fs.ErrNotExist) && !strings.Contains(err.Error(), "no such file") {
+	prepared := make([]savedRef, 0, len(updates))
+	defer func() {
+		for _, item := range prepared {
+			_ = os.Remove(item.tmp)
+		}
+	}()
+	paths := map[string]string{}
+	for _, update := range updates {
+		if strings.TrimSpace(update.name) == "" {
+			continue
+		}
+		if _, err := digestHex(update.digest); err != nil {
 			return err
 		}
-	} else if current != expected {
-		return fmt.Errorf("branch conflict for %s: expected %s but current is %s", name, expected, current)
+		path := filepath.Join(s.refsRoot(), safeRefName(update.name))
+		if previous, exists := paths[path]; exists && previous != update.name {
+			return fmt.Errorf("ref names %q and %q map to the same local path", previous, update.name)
+		}
+		paths[path] = update.name
+		oldData, readErr := os.ReadFile(path)
+		exists := readErr == nil
+		if readErr != nil && !os.IsNotExist(readErr) {
+			return readErr
+		}
+		if strings.TrimSpace(update.expected) != "" && exists {
+			current := strings.TrimSpace(string(oldData))
+			if current != update.expected {
+				return fmt.Errorf("branch conflict for %s: expected %s but current is %s", update.name, update.expected, current)
+			}
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return err
+		}
+		tmp, err := os.CreateTemp(filepath.Dir(path), ".ref-*.tmp")
+		if err != nil {
+			return err
+		}
+		tmpPath := tmp.Name()
+		err = tmp.Chmod(0o644)
+		if err == nil {
+			_, err = tmp.WriteString(update.digest + "\n")
+		}
+		if err == nil {
+			err = tmp.Sync()
+		}
+		if closeErr := tmp.Close(); err == nil {
+			err = closeErr
+		}
+		if err != nil {
+			os.Remove(tmpPath)
+			return err
+		}
+		prepared = append(prepared, savedRef{path: path, data: oldData, exists: exists, tmp: tmpPath})
 	}
-	return s.writeRef(name, digest)
+	for i, item := range prepared {
+		if err := renameRefFile(item.tmp, item.path); err != nil {
+			var rollbackErr error
+			for j := i - 1; j >= 0; j-- {
+				previous := prepared[j]
+				if previous.exists {
+					rollbackErr = errors.Join(rollbackErr, os.WriteFile(previous.path, previous.data, 0o644))
+				} else {
+					removeErr := os.Remove(previous.path)
+					if removeErr != nil && !os.IsNotExist(removeErr) {
+						rollbackErr = errors.Join(rollbackErr, removeErr)
+					}
+				}
+			}
+			for j := i; j < len(prepared); j++ {
+				os.Remove(prepared[j].tmp)
+			}
+			return errors.Join(err, rollbackErr)
+		}
+	}
+	return nil
 }
 
 func (s store) resolveRef(ref string) (string, error) {
@@ -385,7 +510,31 @@ mount = %q
 default_branch = %q
 encrypt = %q
 `, cfg.OSIxVersion, cfg.Name, cfg.Base, cfg.BaseDigest, cfg.StateRef, cfg.Mount, cfg.DefaultBranch, cfg.Encrypt)
-	return os.WriteFile(path, []byte(text), 0o644)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".config-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := tmp.Chmod(0o644); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.WriteString(text); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }
 
 func digestBytes(data []byte) string {

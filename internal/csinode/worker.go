@@ -16,7 +16,12 @@ type WorkerManager struct {
 	PollInterval time.Duration
 
 	mu      sync.Mutex
-	workers map[string]context.CancelFunc
+	workers map[string]*workerHandle
+}
+
+type workerHandle struct {
+	cancel context.CancelFunc
+	done   chan struct{}
 }
 
 func NewWorkerManager(node Node, reporter SnapshotReporter) *WorkerManager {
@@ -24,7 +29,7 @@ func NewWorkerManager(node Node, reporter SnapshotReporter) *WorkerManager {
 		Node:         node,
 		Reporter:     reporter,
 		PollInterval: time.Second,
-		workers:      map[string]context.CancelFunc{},
+		workers:      map[string]*workerHandle{},
 	}
 }
 
@@ -43,7 +48,7 @@ func (m *WorkerManager) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			m.stopAll()
+			m.stopAll(ctx)
 			return ctx.Err()
 		case <-ticker.C:
 			if err := m.reconcile(ctx); err != nil {
@@ -71,10 +76,9 @@ func (m *WorkerManager) reconcile(ctx context.Context) error {
 		m.start(ctx, record)
 	}
 	m.mu.Lock()
-	for volumeID, cancel := range m.workers {
+	for volumeID, worker := range m.workers {
 		if !seen[volumeID] {
-			cancel()
-			delete(m.workers, volumeID)
+			worker.cancel()
 		}
 	}
 	m.mu.Unlock()
@@ -88,29 +92,65 @@ func (m *WorkerManager) start(ctx context.Context, record MountRecord) {
 		return
 	}
 	workerCtx, cancel := context.WithCancel(ctx)
-	m.workers[record.VolumeID] = cancel
-	go m.runWorker(workerCtx, record)
+	handle := &workerHandle{cancel: cancel, done: make(chan struct{})}
+	m.workers[record.VolumeID] = handle
+	go m.runWorker(workerCtx, record, handle)
 }
 
 func (m *WorkerManager) stop(volumeID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if cancel, exists := m.workers[volumeID]; exists {
-		cancel()
-		delete(m.workers, volumeID)
+	if worker, exists := m.workers[volumeID]; exists {
+		worker.cancel()
 	}
 }
 
-func (m *WorkerManager) stopAll() {
+func (m *WorkerManager) stopAndWait(ctx context.Context, volumeID string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	for volumeID, cancel := range m.workers {
-		cancel()
-		delete(m.workers, volumeID)
+	worker := m.workers[volumeID]
+	if worker != nil {
+		worker.cancel()
+	}
+	m.mu.Unlock()
+	if worker == nil {
+		return nil
+	}
+	select {
+	case <-worker.done:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("wait for autosnapshot worker %s: %w", volumeID, ctx.Err())
 	}
 }
 
-func (m *WorkerManager) runWorker(ctx context.Context, record MountRecord) {
+func (m *WorkerManager) stopAll(ctx context.Context) {
+	m.mu.Lock()
+	workers := make([]*workerHandle, 0, len(m.workers))
+	for _, worker := range m.workers {
+		worker.cancel()
+		workers = append(workers, worker)
+	}
+	m.mu.Unlock()
+	for _, worker := range workers {
+		select {
+		case <-worker.done:
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func (m *WorkerManager) finish(volumeID string, worker *workerHandle) {
+	m.mu.Lock()
+	if m.workers[volumeID] == worker {
+		delete(m.workers, volumeID)
+	}
+	m.mu.Unlock()
+	close(worker.done)
+}
+
+func (m *WorkerManager) runWorker(ctx context.Context, record MountRecord, worker *workerHandle) {
+	defer m.finish(record.VolumeID, worker)
 	interval := workerInterval(record.Policy)
 	backoff := interval
 	if backoff < time.Second {
@@ -127,7 +167,6 @@ func (m *WorkerManager) runWorker(ctx context.Context, record MountRecord) {
 			record = current
 		}
 		if err != nil || !record.AutoSnapshot {
-			m.stop(record.VolumeID)
 			return
 		}
 		request := SnapshotRequest{
