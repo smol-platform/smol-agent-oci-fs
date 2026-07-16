@@ -68,7 +68,7 @@ func TestWatchRetentionCreatesCheckpointAndRecordsState(t *testing.T) {
 		t.Fatalf("unexpected watch retention result: %#v", result)
 	}
 	plan := result.Compactions[0]
-	if plan.CheckpointDigest == "" || plan.CheckpointTag != "checkpoint-000002" {
+	if plan.CheckpointDigest == "" || !strings.HasPrefix(plan.CheckpointTag, "checkpoint-000002-") {
 		t.Fatalf("unexpected compaction plan: %#v", plan)
 	}
 	state, err := readWatchState(result.StatePath)
@@ -79,7 +79,7 @@ func TestWatchRetentionCreatesCheckpointAndRecordsState(t *testing.T) {
 		t.Fatalf("watch state missing compaction: %#v", state)
 	}
 	restore := filepath.Join(root, "restore")
-	if err := Restore(root, "checkpoint-000002", restore, RestoreOptions{}); err != nil {
+	if err := Restore(root, plan.CheckpointTag, restore, RestoreOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	assertFile(t, filepath.Join(restore, "agent", "workspace", "file.txt"), "v2\n")

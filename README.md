@@ -135,6 +135,34 @@ For registry-backed use, initialize with a registry repository:
 ./osix restore localhost:5000/acme/research-agent-a:snap-000001 restored
 ```
 
+Inspect and extract snapshot contents without mounting the image:
+
+```sh
+# Interactive, nnn-style tree navigation. Press ? for keys.
+./osix browse main /agent/workspace
+
+# Script-friendly directory listings do not download filesystem layers.
+./osix browse main /agent/workspace --plain
+./osix browse main /agent/workspace --json
+
+# Extract a directory or one file to an exact destination path.
+./osix extract main /agent/workspace/results ./results
+./osix extract main /agent/memory/memory.jsonl ./memory.jsonl
+
+# Compact an encrypted chain into an encrypted checkpoint.
+./osix compact encrypted-main --squash-every 24 \
+  --decrypt ./age-identity.txt --encrypt age:age1...
+```
+
+`browse` uses the final tree recorded in the snapshot config. Remote references
+are pulled lazily, and layer data is fetched only when a file is previewed or an
+entry is extracted. The interactive browser supports arrow keys or `j`/`k`,
+enter or `l` to open, `h` to go back, `p` to preview, and `e` to extract the
+selection into the current directory. `extract` composes the complete snapshot
+chain into a staged location, verifies its tree digest, selects the requested
+path, and atomically moves it into place; use `--force` to replace an existing
+destination.
+
 Registry credentials are discovered from `OSIX_REGISTRY_TOKEN`,
 `OSIX_REGISTRY_USERNAME`/`OSIX_REGISTRY_PASSWORD`, Docker `config.json` auth
 entries, and Docker `credHelpers`/`credsStore` helpers under `DOCKER_CONFIG` or
@@ -283,6 +311,8 @@ Implemented commands:
 - `osix push`
 - `osix pull`
 - `osix read`
+- `osix extract`
+- `osix browse`
 - `osix restore`
 - `osix mount`
 - `osix mount status`

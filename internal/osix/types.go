@@ -344,6 +344,9 @@ type CompactPolicy struct {
 	CheckpointTags []string
 	PruneLocal     bool
 	PruneSource    bool
+	Decrypt        string
+	Encrypt        string
+	SourceTarget   string
 }
 
 type CompactPlan struct {

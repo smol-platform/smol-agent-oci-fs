@@ -68,20 +68,41 @@ func Compact(workspaceRoot, ref string, policy CompactPolicy) (CompactPlan, erro
 		}
 		return plan, nil
 	}
-	tmp, err := os.MkdirTemp("", "osix-compact-*")
-	if err != nil {
-		return plan, err
+	snapshotTarget := policy.SourceTarget
+	if snapshotTarget == "" {
+		tmp, err := os.MkdirTemp("", "osix-compact-*")
+		if err != nil {
+			return plan, err
+		}
+		defer os.RemoveAll(tmp)
+		if err := Restore(workspaceRoot, digest, tmp, RestoreOptions{Force: true, Decrypt: policy.Decrypt}); err != nil {
+			return plan, err
+		}
+		snapshotTarget = tmp
+	} else {
+		tree, _, err := scanTree(snapshotTarget)
+		if err != nil {
+			return plan, err
+		}
+		tree, err = redactedSnapshotTree(snapshotTarget, tree)
+		if err != nil {
+			return plan, err
+		}
+		want := chain[len(chain)-1].Config.Integrity.MTreeDigest
+		if want == "" {
+			want = digestTree(chain[len(chain)-1].Config.Tree)
+		}
+		if got := digestTree(tree); got != want {
+			return plan, fmt.Errorf("checkpoint source changed after snapshot: got tree %s want %s", got, want)
+		}
 	}
-	defer os.RemoveAll(tmp)
-	if err := Restore(workspaceRoot, digest, tmp, RestoreOptions{Force: true}); err != nil {
-		return plan, err
-	}
-	snap, err := Snapshot(workspaceRoot, tmp, SnapshotOptions{
+	snap, err := Snapshot(workspaceRoot, snapshotTarget, SnapshotOptions{
 		Tag:        plan.CheckpointTag,
 		AlsoTag:    "latest",
 		Message:    "compacted checkpoint from " + ref,
 		Checkpoint: true,
 		SecretScan: "warn",
+		Encrypt:    policy.Encrypt,
 	})
 	if err != nil {
 		return plan, err
