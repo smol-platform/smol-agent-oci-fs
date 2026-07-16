@@ -22,6 +22,8 @@ Usage:
   osix registry probe REGISTRY/REPO [--tag TAG] [--json]
   osix pull REGISTRY/REPO:TAG [--tag LOCAL_TAG] [--lazy]
   osix read REF PATH [--decrypt IDENTITIES] [--offset N --length N]
+  osix extract REF PATH DEST [--force] [--decrypt IDENTITIES]
+  osix browse REF [PATH] [--plain|--json] [--decrypt IDENTITIES]
   osix restore REF DIR [--force] [--decrypt IDENTITIES] [--trusted-key PUBKEY] [--certificate-identity ID --certificate-oidc-issuer ISSUER]
   osix mount REF DIR [--mode auto|overlay|fuse|materialized] [--rw] [--branch BRANCH] [--force] [--decrypt IDENTITIES] [--cache DIR] [--lazy]
   osix mount status DIR
@@ -34,7 +36,7 @@ Usage:
   osix validate REF
   osix watch DIR [--once] [--every DURATION] [--max-dirty BYTES] [--on-turn-boundary] [--push] [--compact-every N] [--squash-every N] [--prune-local] [--prune-remote]
   osix watch start/status/stop/list/restart
-  osix compact REF [--dry-run] [--squash-every N] [--keep-snapshots A,B] [--preserve-signed] [--prune-local]
+  osix compact REF [--dry-run] [--squash-every N] [--keep-snapshots A,B] [--preserve-signed] [--prune-local] [--decrypt IDENTITIES] [--encrypt RECIPIENTS]
   osix side-effect check DIR --tool TOOL --resource RESOURCE [--operation read|write] [--idempotency-key KEY]
   osix run MOUNT_DIR -- COMMAND [ARG...]
   osix show REF
@@ -79,6 +81,10 @@ func run(args []string) error {
 		return runPull(args[1:])
 	case "read":
 		return runRead(args[1:])
+	case "extract":
+		return runExtract(args[1:])
+	case "browse":
+		return runBrowse(args[1:])
 	case "restore":
 		return runRestore(args[1:], false)
 	case "mount":
@@ -907,12 +913,14 @@ func runCompact(args []string) error {
 	preserveSigned := fs.Bool("preserve-signed", false, "preserve signed snapshots")
 	checkpointTag := fs.String("tag", "", "checkpoint tag")
 	pruneLocal := fs.Bool("prune-local", false, "remove unretained local refs and blobs after checkpointing")
+	decrypt := fs.String("decrypt", "", "decrypt identities or KMS recipients, comma-separated")
+	encrypt := fs.String("encrypt", "", "encrypt the checkpoint for recipients, comma-separated")
 	fs.SetOutput(os.Stderr)
 	if err := parseInterspersed(fs, args, map[string]bool{"dry-run": true, "preserve-signed": true, "prune-local": true}); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
-		return fmt.Errorf("usage: osix compact REF [--dry-run] [--squash-every N] [--keep-snapshots A,B] [--preserve-signed]")
+		return fmt.Errorf("usage: osix compact REF [--dry-run] [--squash-every N] [--keep-snapshots A,B] [--preserve-signed] [--decrypt IDENTITIES] [--encrypt RECIPIENTS]")
 	}
 	plan, err := osix.Compact(".", fs.Arg(0), osix.CompactPolicy{
 		SquashEvery:    *squashEvery,
@@ -921,6 +929,8 @@ func runCompact(args []string) error {
 		DryRun:         *dryRun,
 		CheckpointTag:  *checkpointTag,
 		PruneLocal:     *pruneLocal,
+		Decrypt:        *decrypt,
+		Encrypt:        *encrypt,
 	})
 	if err != nil {
 		return err

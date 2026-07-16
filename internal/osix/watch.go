@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -85,7 +86,7 @@ func Watch(workspaceRoot, target string, opts WatchOptions) (WatchResult, error)
 					return result, err
 				}
 			}
-			if plan, ran, err := maybeCompactWatchSnapshot(workspaceRoot, ws, branchTag, snap.ManifestDigest, len(result.Snapshots), opts); err != nil {
+			if plan, ran, err := maybeCompactWatchSnapshot(workspaceRoot, target, ws, branchTag, snap.ManifestDigest, len(result.Snapshots), opts); err != nil {
 				state.LastCompaction = &plan
 				state.LastError = err.Error()
 				_ = writeWatchState(statePath, state)
@@ -105,7 +106,7 @@ func Watch(workspaceRoot, target string, opts WatchOptions) (WatchResult, error)
 	return result, nil
 }
 
-func maybeCompactWatchSnapshot(workspaceRoot string, ws WorkspaceConfig, branchTag, snapshotDigest string, snapshotCount int, opts WatchOptions) (CompactPlan, bool, error) {
+func maybeCompactWatchSnapshot(workspaceRoot, target string, ws WorkspaceConfig, branchTag, snapshotDigest string, snapshotCount int, opts WatchOptions) (CompactPlan, bool, error) {
 	retention := opts.Retention
 	if !retention.Enabled() {
 		return CompactPlan{}, false, nil
@@ -131,6 +132,8 @@ func maybeCompactWatchSnapshot(workspaceRoot string, ws WorkspaceConfig, branchT
 		CheckpointTags: checkpointTags,
 		PruneLocal:     retention.PruneLocal,
 		PruneSource:    retention.PruneLocal || retention.PruneRemote,
+		Encrypt:        opts.Encrypt,
+		SourceTarget:   target,
 	})
 	if err != nil {
 		return plan, true, err
@@ -169,7 +172,11 @@ func watchCheckpointTag(workspaceRoot, snapshotDigest string, retention WatchRet
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("%s-%06d", prefix, cfg.Snapshot.Sequence), nil
+	shortDigest := strings.TrimPrefix(snapshotDigest, "sha256:")
+	if len(shortDigest) > 12 {
+		shortDigest = shortDigest[:12]
+	}
+	return fmt.Sprintf("%s-%06d-%s", prefix, cfg.Snapshot.Sequence, shortDigest), nil
 }
 
 func watchStatePath(s store, target string) (string, error) {

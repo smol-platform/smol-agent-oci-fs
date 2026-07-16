@@ -63,6 +63,22 @@ materialize an unencrypted complete lowerdir. Encrypted lazy refs with lazy
 indexes can restore with `--decrypt` from encrypted per-file blobs without
 fetching the whole encrypted layer.
 
+Browse or extract data directly from a local or remote snapshot reference:
+
+```sh
+./osix browse lazy-main /agent/workspace
+./osix browse lazy-main /agent/workspace --plain
+./osix browse lazy-main /agent/workspace --json
+./osix extract lazy-main /agent/workspace/results ./results
+./osix extract lazy-main /agent/workspace/report.json ./report.json
+```
+
+Non-interactive `browse` reads only manifest/config tree metadata. Interactive
+file previews use range reads capped at 64 KiB. `extract` verifies the composed
+snapshot tree before atomically installing the selected path; pass `--force`
+only when the destination should be replaced. Add `--decrypt IDENTITIES` to
+either command for encrypted snapshots.
+
 For encrypted snapshots, `read --decrypt` can use encrypted per-file lazy blobs,
 and range reads can fetch only the needed encrypted lazy chunks:
 
@@ -436,6 +452,31 @@ creating checkpoints or pruning. Remote pruning issues OCI Distribution manifest
 deletes and requires registry-side deletion support plus credentials authorized
 to delete manifests.
 
+An hourly snapshot stream with an approximately daily checkpoint can be
+configured with count-based retention:
+
+```sh
+./osix watch start agentfs \
+  --every 1h \
+  --push \
+  --compact-every 24 \
+  --squash-every 1 \
+  --checkpoint-tag-prefix daily
+```
+
+To create a full checkpoint every hour instead of hourly deltas, use
+`--compact-every 1 --squash-every 1 --checkpoint-tag-prefix hourly`.
+Watch-generated checkpoint tags contain both the source sequence and a digest
+suffix so successive checkpoints remain individually addressable.
+
+The current policy does not yet express tiered time windows such as “retain one
+hourly checkpoint for 2 days, then one daily checkpoint for 7 days.” Local and
+remote pruning operates on the compacted chain rather than hourly/daily age
+buckets, so enabling `--prune-local` or `--prune-remote` in the example would
+remove the hourly chain members as soon as the daily checkpoint is created.
+Registry lifecycle rules can enforce age limits externally, but exact tiered
+retention requires time-bucket fields in the OSIx retention policy.
+
 ## Compaction
 
 ```sh
@@ -443,6 +484,22 @@ to delete manifests.
 ./osix compact main --squash-every 2 --tag checkpoint-main --prune-local
 ./osix restore checkpoint-main ./checkpoint-restore
 ```
+
+To compact an encrypted chain, provide its decrypt identity. If encryption was
+set only on individual snapshots rather than in workspace configuration, also
+provide the checkpoint recipient:
+
+```sh
+./osix compact encrypted-main \
+  --squash-every 24 \
+  --tag encrypted-checkpoint \
+  --decrypt ./age-identity.txt \
+  --encrypt age:age1...
+```
+
+Automatic watch compaction builds the checkpoint from the already materialized
+watch target, so it does not require a decrypt identity and preserves the watch
+or workspace encryption recipient.
 
 Manual compaction is conservative by default: the source branch head is kept
 unless a retention policy creates a checkpoint that replaces the branch/latest

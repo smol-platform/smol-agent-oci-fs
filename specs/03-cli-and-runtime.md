@@ -122,6 +122,27 @@ decrypt material for encrypted layers. When `--offset` and `--length` are set,
 the command returns only that byte range; encrypted lazy indexes may satisfy the
 range by fetching only the required encrypted chunks.
 
+### Browse And Extract
+
+```text
+osix browse restored-main /agent/workspace
+osix browse restored-main /agent/workspace --plain
+osix browse restored-main /agent/workspace --json
+osix extract restored-main /agent/workspace/results ./results
+osix extract restored-main /agent/workspace/report.json ./report.json
+```
+
+Browse lists the final tree from snapshot config metadata and SHOULD NOT fetch
+filesystem layers until a file is previewed. When standard input or output is
+not a terminal, browse emits one plain directory listing and exits. `--json`
+emits `TreeEntry` objects for automation.
+
+Extract accepts an image reference, a file or directory path inside the image,
+and an exact local destination. It MUST compose and integrity-check the resolved
+snapshot chain before atomically installing the selection. Existing targets
+MUST require `--force`. Remote references SHOULD use a lazy pull before content
+materialization, and encrypted images require `--decrypt` material.
+
 ### Watch
 
 ```text
