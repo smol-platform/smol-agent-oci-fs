@@ -1,0 +1,23 @@
+# osix CLI image — for running `osix` in a CronJob / one-shot Job (e.g. the
+# gastown city-state snapshotter). The operator/csi Dockerfiles ship only their
+# own distroless binaries; this one ships the `osix` CLI on a small shell base
+# with rsync (the snapshotter curates a subtree before `osix snapshot`, and osix
+# has no --exclude flag).
+#
+#   docker buildx build --platform linux/amd64 --push \
+#     -t ghcr.io/stigenai/osix-cli:v0.1.3 -f Dockerfile.cli .
+#
+# osix is CGO-free static, so alpine (musl) runs it fine.
+FROM --platform=$BUILDPLATFORM golang:1.24-bookworm AS build
+ARG TARGETOS TARGETARCH
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    go build -buildvcs=false -trimpath -ldflags="-s -w" -o /out/osix ./cmd/osix
+
+FROM alpine:3.20
+RUN apk add --no-cache rsync ca-certificates tzdata
+COPY --from=build /out/osix /usr/local/bin/osix
+ENTRYPOINT ["/bin/sh", "-c"]
